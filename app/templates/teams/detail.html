@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>{{ team.name }}</h1><p class="muted">{{ team.department.name }}</p></div><a class="button" href="/admin/teams/{{ team.id }}/edit">Edit Team</a></div>
+<div class="detail-grid"><div class="card"><h2>Team Details</h2><dl><dt>Description</dt><dd>{{ team.description or '—' }}</dd><dt>Status</dt><dd><span class="status {{ 'active' if team.is_active else 'inactive' }}">{{ 'Active' if team.is_active else 'Inactive' }}</span></dd><dt>Active Members</dt><dd>{{ team.employees | selectattr("is_active") | list | length }}</dd></dl></div>
+<div class="card"><h2>Members</h2>{% set active_members = team.employees | selectattr("is_active") | list %}{% if active_members %}<ul>{% for employee in active_members %}<li><a href="/admin/employees/{{ employee.id }}">{{ employee.display_name }}</a>{% if employee.job_title %} — {{ employee.job_title }}{% endif %}</li>{% endfor %}</ul>{% else %}<p class="muted">No active members.</p>{% endif %}</div></div>
+<div class="action-bar">{% if team.is_active %}<form method="post" action="/admin/teams/{{ team.id }}/deactivate"><button class="danger" type="submit">Deactivate</button></form>{% else %}<form method="post" action="/admin/teams/{{ team.id }}/activate"><button type="submit">Reactivate</button></form>{% endif %}<a class="button secondary" href="/admin/teams">Back to Teams</a></div>
+{% endblock %}
