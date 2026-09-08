@@ -56,6 +56,14 @@ const V3_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='3' WHERE key='schema_version'"
 ];
 
+const V4_SCHEMA_STATEMENTS = [
+  "INSERT OR IGNORE INTO roles (name, description, is_system) VALUES ('Manager','Manager or team leader with scoped responsibility for assigned teams',1)",
+  "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r JOIN permissions p ON p.code IN ('MANAGE_EMPLOYEES','MANAGE_ROTA') WHERE r.name='Manager'",
+  "CREATE TABLE IF NOT EXISTS team_managers (team_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, PRIMARY KEY (team_id, employee_id), FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE, FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE)",
+  "CREATE INDEX IF NOT EXISTS idx_team_managers_employee ON team_managers(employee_id)",
+  "UPDATE app_meta SET value='4' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -88,5 +96,10 @@ export async function ensureSchema(db) {
 
   if (version < 3) {
     await applyStatements(db, V3_SCHEMA_STATEMENTS, true);
+    version = 3;
+  }
+
+  if (version < 4) {
+    await applyStatements(db, V4_SCHEMA_STATEMENTS);
   }
 }
