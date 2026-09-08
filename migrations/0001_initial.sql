@@ -50,30 +50,6 @@ CREATE TABLE IF NOT EXISTS departments (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS teams (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    department_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (department_id, name),
-    FOREIGN KEY (department_id) REFERENCES departments(id)
-);
-
-CREATE TABLE IF NOT EXISTS employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER UNIQUE,
-    team_id INTEGER NOT NULL,
-    display_name TEXT NOT NULL,
-    job_title TEXT,
-    phone TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (team_id) REFERENCES teams(id)
-);
-
 CREATE TABLE IF NOT EXISTS shift_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -92,6 +68,36 @@ CREATE TABLE IF NOT EXISTS rota_patterns (
     cycle_length_weeks INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    department_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    default_rota_pattern_id INTEGER,
+    default_pattern_start_date TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (department_id, name),
+    FOREIGN KEY (department_id) REFERENCES departments(id),
+    FOREIGN KEY (default_rota_pattern_id) REFERENCES rota_patterns(id)
+);
+
+CREATE TABLE IF NOT EXISTS employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE,
+    team_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    job_title TEXT,
+    phone TEXT,
+    override_rota_pattern_id INTEGER,
+    override_pattern_start_date TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    FOREIGN KEY (override_rota_pattern_id) REFERENCES rota_patterns(id)
 );
 
 CREATE TABLE IF NOT EXISTS rota_pattern_days (
@@ -130,5 +136,21 @@ INSERT OR IGNORE INTO shift_types (name, code, start_time, end_time, is_working_
     ('Early', 'EARLY', '08:30', '16:30', 1),
     ('Late', 'LATE', '09:30', '18:00', 1),
     ('Long Day', 'LONG', '08:00', '18:00', 1);
+
+INSERT OR IGNORE INTO rota_patterns (name, description, cycle_length_weeks) VALUES
+    ('No Scheduled Hours', 'Default all-off rota pattern', 1);
+
+INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week)
+SELECT rp.id, st.id, 1, d.day_of_week
+FROM rota_patterns rp
+JOIN shift_types st ON st.code = 'OFF'
+JOIN (
+    SELECT 0 AS day_of_week UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+) d
+WHERE rp.name = 'No Scheduled Hours';
+
+UPDATE teams
+SET default_rota_pattern_id = (SELECT id FROM rota_patterns WHERE name = 'No Scheduled Hours')
+WHERE default_rota_pattern_id IS NULL;
 
 INSERT OR IGNORE INTO app_meta (key, value) VALUES ('schema_version', '1');
