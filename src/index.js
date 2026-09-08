@@ -1,4 +1,4 @@
-const shell = (title, content) => `<!doctype html>
+const shell = (title, content, active = "Dashboard") => `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -7,38 +7,36 @@ const shell = (title, content) => `<!doctype html>
   <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
+<header class="top-bar">
+  <div class="brand">Support Portal</div>
+  <div class="user-area">Cloudflare prototype</div>
+</header>
 <div class="app-shell">
-  <aside class="sidebar">
-    <div class="brand">Support Portal</div>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="#" class="disabled">Rota</a>
-      <a href="#" class="disabled">Users</a>
-      <a href="#" class="disabled">Teams</a>
-      <a href="#" class="disabled">Employees</a>
-      <a href="#" class="disabled">Shift Patterns</a>
-      <a href="#" class="disabled">Administration</a>
-    </nav>
-  </aside>
-  <main class="content">
-    <header class="topbar">
-      <div></div>
-      <div>Cloudflare prototype</div>
-    </header>
+  <nav class="side-nav">
+    <a class="${active === "Dashboard" ? "active" : ""}" href="/">Dashboard</a>
+    <a class="disabled" href="#">Rota</a>
+    <a class="disabled" href="#">Users</a>
+    <a class="disabled" href="#">Teams</a>
+    <a class="disabled" href="#">Employees</a>
+    <a class="disabled" href="#">Shift Patterns</a>
+    <a class="disabled" href="#">Administration</a>
+  </nav>
+  <main class="page">
     ${content}
   </main>
 </div>
+<footer class="footer">SupportApp · Cloudflare-native prototype</footer>
 </body>
 </html>`;
 
 const dashboard = `
   <div class="page-header">
     <div>
-      <h1>Dashboard</h1>
-      <div class="muted">Support administration and rota management.</div>
+      <div class="page-title">Support Dashboard</div>
+      <div class="page-description">Support administration and rota management.</div>
     </div>
   </div>
-  <div class="alert">
+  <div class="notice">
     <strong>Cloudflare-native baseline</strong><br>
     This deployment proves the new SupportApp runtime. D1, authentication and application modules will be added next.
   </div>
@@ -46,17 +44,17 @@ const dashboard = `
     <article class="card">
       <h2>Employees</h2>
       <p class="muted">Employee administration will be migrated from the FastAPI prototype.</p>
-      <span class="status inactive">Planned</span>
+      <span class="status-badge status-inactive">Planned</span>
     </article>
     <article class="card">
       <h2>Teams</h2>
       <p class="muted">Departments and support teams, including employee membership.</p>
-      <span class="status inactive">Planned</span>
+      <span class="status-badge status-inactive">Planned</span>
     </article>
     <article class="card">
       <h2>Rota</h2>
       <p class="muted">Reusable shift patterns and team/employee rota assignments.</p>
-      <span class="status active">Next phase</span>
+      <span class="status-badge status-active">Next phase</span>
     </article>
   </div>`;
 
@@ -75,9 +73,14 @@ export default {
     }
 
     return new Response(shell("Not yet implemented", `
-      <div class="page-header"><div><h1>Not yet implemented</h1><div class="muted">This module will be migrated into the Cloudflare-native SupportApp.</div></div></div>
+      <div class="page-header">
+        <div>
+          <div class="page-title">Not yet implemented</div>
+          <div class="page-description">This module will be migrated into the Cloudflare-native SupportApp.</div>
+        </div>
+      </div>
       <div class="action-bar"><a class="button" href="/">Return to dashboard</a></div>
-    `), {
+    `, ""), {
       status: 404,
       headers: { "content-type": "text/html; charset=UTF-8" },
     });
