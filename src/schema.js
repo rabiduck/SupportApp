@@ -31,15 +31,39 @@ export const INITIAL_SCHEMA_STATEMENTS = [
   "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('schema_version','1')"
 ];
 
+const V2_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS week_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+  "CREATE TABLE IF NOT EXISTS week_pattern_days (id INTEGER PRIMARY KEY AUTOINCREMENT, week_pattern_id INTEGER NOT NULL, shift_type_id INTEGER NOT NULL, day_of_week INTEGER NOT NULL, UNIQUE (week_pattern_id, day_of_week), FOREIGN KEY (week_pattern_id) REFERENCES week_patterns(id) ON DELETE CASCADE, FOREIGN KEY (shift_type_id) REFERENCES shift_types(id))",
+  "CREATE TABLE IF NOT EXISTS rota_pattern_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, rota_pattern_id INTEGER NOT NULL, week_number INTEGER NOT NULL, week_pattern_id INTEGER NOT NULL, UNIQUE (rota_pattern_id, week_number), FOREIGN KEY (rota_pattern_id) REFERENCES rota_patterns(id) ON DELETE CASCADE, FOREIGN KEY (week_pattern_id) REFERENCES week_patterns(id))",
+  "CREATE INDEX IF NOT EXISTS idx_week_pattern_days_pattern ON week_pattern_days(week_pattern_id)",
+  "CREATE INDEX IF NOT EXISTS idx_rota_pattern_weeks_pattern ON rota_pattern_weeks(rota_pattern_id)",
+  "INSERT OR IGNORE INTO week_patterns (name, description, is_active, created_at) SELECT name, description, is_active, created_at FROM rota_patterns",
+  "INSERT OR IGNORE INTO week_pattern_days (week_pattern_id, shift_type_id, day_of_week) SELECT wp.id, rpd.shift_type_id, rpd.day_of_week FROM rota_pattern_days rpd JOIN rota_patterns rp ON rp.id=rpd.rota_pattern_id JOIN week_patterns wp ON wp.name=rp.name WHERE rpd.week_number=1",
+  "INSERT OR IGNORE INTO rota_pattern_weeks (rota_pattern_id, week_number, week_pattern_id) SELECT rp.id, 1, wp.id FROM rota_patterns rp JOIN week_patterns wp ON wp.name=rp.name",
+  "UPDATE app_meta SET value='2' WHERE key='schema_version'"
+];
+
+async function applyStatements(db, statements) {
+  for (const statement of statements) {
+    await db.prepare(statement).run();
+  }
+}
+
 export async function ensureSchema(db) {
+  let version = 0;
   try {
-    const row = await db.prepare("SELECT value FROM app_meta WHERE key = 'schema_version'").first();
-    if (row?.value === '1') return;
+    const current = await db.prepare("SELECT value FROM app_meta WHERE key='schema_version'").first();
+    version = Number(current?.value || 0);
   } catch (_) {
-    // First request against a new D1 database: apply the initial schema below.
+    version = 0;
   }
 
-  for (const statement of INITIAL_SCHEMA_STATEMENTS) {
-    await db.prepare(statement).run();
+  if (version < 1) {
+    await applyStatements(db, INITIAL_SCHEMA_STATEMENTS);
+    version = 1;
+  }
+
+  if (version < 2) {
+    await applyStatements(db, V2_SCHEMA_STATEMENTS);
   }
 }
