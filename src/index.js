@@ -59,12 +59,8 @@ const dashboard = `
   </div>`;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     const url = new URL(request.url);
-
-    if (url.pathname === "/assets/site.css") {
-      return env.ASSETS.fetch(request);
-    }
 
     if (url.pathname === "/") {
       return new Response(shell("Dashboard", dashboard), {
