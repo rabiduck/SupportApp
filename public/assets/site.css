@@ -5,7 +5,7 @@ Corporate Theme
 -----------------------------------------------------------
 Claritas corporate styling for the Support Portal.
 
-Version: 0.3
+Version: 0.4
 ===========================================================
 */
 
@@ -92,7 +92,7 @@ form { margin: 0; }
 .inline-form button,
 td .button { min-width: 92px; }
 
- table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; }
 thead { background: #5BABBC; color: white; }
 th,
 td { padding: 10px 12px; text-align: left; vertical-align: top; }
@@ -101,6 +101,26 @@ tbody tr:hover { background: #F3F8FA; }
 .empty { padding: 24px; color: var(--text-light); text-align: center; }
 .rota-table table { min-width: 1100px; }
 .rota-table td:not(:first-child):not(:nth-child(2)):not(:nth-child(3)) { text-align: center; }
+
+/* Calendar rota */
+.rota-toolbar { display: grid; grid-template-columns: minmax(190px, 1fr) auto minmax(220px, 1fr); gap: 18px; align-items: end; margin-bottom: 18px; }
+.rota-filter label { margin: 0; }
+.rota-filter select { margin-top: 4px; }
+.week-nav { display: flex; gap: 8px; justify-content: center; }
+.week-range { text-align: right; align-self: center; color: var(--primary-dark); font-size: 1.05rem; }
+.rota-calendar table { min-width: 1050px; table-layout: fixed; }
+.rota-calendar th:first-child { width: 210px; }
+.rota-calendar th:nth-child(2) { width: 140px; }
+.rota-calendar th:not(:first-child):not(:nth-child(2)),
+.rota-calendar .rota-cell { text-align: center; }
+.rota-calendar .employee-cell .muted { font-size: .78rem; }
+.rota-calendar .rota-cell { vertical-align: middle; height: 58px; border-left: 1px solid var(--border); }
+.rota-calendar .team-group td { background: #EAF5F7; color: var(--primary); padding: 7px 12px; }
+.rota-calendar .today { box-shadow: inset 0 0 0 2px var(--warning); }
+.rota-calendar .shift-off { color: var(--text-light); background: #F4F5F6; }
+.rota-calendar .shift-early { background: #E8F5EC; }
+.rota-calendar .shift-late { background: #FFF3DF; }
+.rota-calendar .shift-long { background: #E8F2F8; }
 
 .error { color: var(--danger); font-weight: bold; }
 .notice { background: var(--surface); border-left: 4px solid var(--primary); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 20px; box-shadow: var(--shadow); }
@@ -125,6 +145,11 @@ tbody tr:hover { background: #F3F8FA; }
 .warning-text { color: var(--danger); font-weight: bold; }
 code { font-family: Consolas, "Courier New", monospace; }
 
+@media (max-width: 1000px) {
+    .rota-toolbar { grid-template-columns: 1fr; align-items: start; }
+    .week-nav { justify-content: flex-start; }
+    .week-range { text-align: left; }
+}
 @media (max-width: 800px) {
     .app-shell { display: block; }
     .side-nav { width: 100%; display: flex; overflow-x: auto; padding: 8px; }
