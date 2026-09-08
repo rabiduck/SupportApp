@@ -5,5 +5,13 @@
   "compatibility_date": "2026-09-08",
   "assets": {
     "directory": "./public"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "supportapp-prod",
+      "database_id": "d2478b99-3509-43df-9895-fb3b49751f36",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
