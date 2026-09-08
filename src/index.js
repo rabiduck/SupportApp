@@ -3,38 +3,61 @@ const shell = (title, content) => `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${title} · SupportApp</title>
+  <title>${title} · Support Portal</title>
   <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
+<div class="app-shell">
   <aside class="sidebar">
-    <div class="brand">SupportApp</div>
+    <div class="brand">Support Portal</div>
     <nav>
-      <a class="active" href="/">Dashboard</a>
-      <a href="/rota">Rota</a>
-      <a href="/users">Users</a>
-      <a href="/teams">Teams</a>
-      <a href="/employees">Employees</a>
-      <a href="/shift-patterns">Shift Patterns</a>
-      <a href="/administration">Administration</a>
+      <a href="/">Dashboard</a>
+      <a href="#" class="disabled">Rota</a>
+      <a href="#" class="disabled">Users</a>
+      <a href="#" class="disabled">Teams</a>
+      <a href="#" class="disabled">Employees</a>
+      <a href="#" class="disabled">Shift Patterns</a>
+      <a href="#" class="disabled">Administration</a>
     </nav>
   </aside>
-  <main class="main">
-    <header class="topbar"><span>Support Portal</span><span class="prototype">Cloudflare prototype</span></header>
-    <section class="content">${content}</section>
+  <main class="content">
+    <header class="topbar">
+      <div></div>
+      <div>Cloudflare prototype</div>
+    </header>
+    ${content}
   </main>
+</div>
 </body>
 </html>`;
 
 const dashboard = `
-  <div class="page-heading">
-    <div><h1>Dashboard</h1><p>Support administration and rota management.</p></div>
+  <div class="page-header">
+    <div>
+      <h1>Dashboard</h1>
+      <div class="muted">Support administration and rota management.</div>
+    </div>
   </div>
-  <div class="notice"><strong>Cloudflare-native baseline</strong><br>This deployment proves the new SupportApp runtime. D1, authentication and application modules will be added next.</div>
-  <div class="cards">
-    <article class="card"><h2>Employees</h2><p>Employee administration will be migrated from the FastAPI prototype.</p><span class="badge">Planned</span></article>
-    <article class="card"><h2>Teams</h2><p>Departments and support teams, including employee membership.</p><span class="badge">Planned</span></article>
-    <article class="card"><h2>Rota</h2><p>Reusable shift patterns and team/employee rota assignments.</p><span class="badge">Next phase</span></article>
+  <div class="alert">
+    <strong>Cloudflare-native baseline</strong><br>
+    This deployment proves the new SupportApp runtime. D1, authentication and application modules will be added next.
+  </div>
+  <div class="card-grid">
+    <article class="card">
+      <h2>Employees</h2>
+      <p class="muted">Employee administration will be migrated from the FastAPI prototype.</p>
+      <span class="status inactive">Planned</span>
+    </article>
+    <article class="card">
+      <h2>Teams</h2>
+      <p class="muted">Departments and support teams, including employee membership.</p>
+      <span class="status inactive">Planned</span>
+    </article>
+    <article class="card">
+      <h2>Rota</h2>
+      <p class="muted">Reusable shift patterns and team/employee rota assignments.</p>
+      <span class="status active">Next phase</span>
+    </article>
   </div>`;
 
 export default {
@@ -51,7 +74,10 @@ export default {
       });
     }
 
-    return new Response(shell("Not yet implemented", `<h1>Not yet implemented</h1><p>This module will be migrated into the Cloudflare-native SupportApp.</p><p><a class="button" href="/">Return to dashboard</a></p>`), {
+    return new Response(shell("Not yet implemented", `
+      <div class="page-header"><div><h1>Not yet implemented</h1><div class="muted">This module will be migrated into the Cloudflare-native SupportApp.</div></div></div>
+      <div class="action-bar"><a class="button" href="/">Return to dashboard</a></div>
+    `), {
       status: 404,
       headers: { "content-type": "text/html; charset=UTF-8" },
     });
