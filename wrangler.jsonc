@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "supportapp-prod",
-      "database_id": "d2478b99-3509-43df-9895-fb3b49751f36",
+      "database_name": "supportapp-uat",
+      "database_id": "3217e771-a3ca-4f5d-99dc-47a525240ca8",
       "migrations_dir": "migrations"
     }
   ]
