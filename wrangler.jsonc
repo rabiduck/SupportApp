@@ -1,8 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "supportapp",
-  "main": "src/worker-v3.js",
+  "main": "src/worker-v4.js",
   "compatibility_date": "2026-09-08",
+  "vars": {
+    "AUTH_REQUIRED": "false"
+  },
   "assets": {
     "directory": "./public"
   },
