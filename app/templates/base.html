@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Support Portal{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/site.css">
+</head>
+<body>
+{% if current_user %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand">Support Portal</div>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="#" class="disabled">Rota</a>
+            {% if "MANAGE_USERS" in permissions %}<a href="/admin/users">Users</a>{% endif %}
+            {% if "MANAGE_TEAMS" in permissions %}<a href="/admin/teams">Teams</a>{% endif %}
+            {% if "MANAGE_EMPLOYEES" in permissions %}<a href="/admin/employees">Employees</a>{% endif %}
+            <a href="#" class="disabled">Shift Patterns</a>
+            <a href="#" class="disabled">Administration</a>
+        </nav>
+        <form method="post" action="/logout" class="logout-form">
+            <button type="submit" class="secondary">Sign out</button>
+        </form>
+    </aside>
+    <main class="content">
+        <header class="topbar">
+            <div></div>
+            <div>{{ current_user.display_name }}</div>
+        </header>
+        {% block content %}{% endblock %}
+    </main>
+</div>
+{% else %}
+    {% block anonymous_content %}{% endblock %}
+{% endif %}
+</body>
+</html>
