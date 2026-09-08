@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><div><h1>Teams</h1><p class="muted">Manage organisational teams.</p></div><a class="button" href="/admin/teams/create">Create Team</a></div>
+<form method="get" class="search-bar"><input type="search" name="q" value="{{ q }}" placeholder="Search teams"><button type="submit">Search</button></form>
+<div class="table-card"><table><thead><tr><th>Name</th><th>Department</th><th>Members</th><th>Status</th></tr></thead><tbody>
+{% for team in teams %}<tr><td><a href="/admin/teams/{{ team.id }}">{{ team.name }}</a></td><td>{{ team.department.name }}</td><td>{{ team.employees | selectattr("is_active") | list | length }}</td><td><span class="status {{ 'active' if team.is_active else 'inactive' }}">{{ 'Active' if team.is_active else 'Inactive' }}</span></td></tr>{% else %}<tr><td colspan="4" class="empty">No teams found.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
