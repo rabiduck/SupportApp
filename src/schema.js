@@ -20,7 +20,13 @@ export const INITIAL_SCHEMA_STATEMENTS = [
   "INSERT OR IGNORE INTO departments (name, description) VALUES ('Support','Support department')",
   "INSERT OR IGNORE INTO shift_types (name, code, start_time, end_time, is_working_day) VALUES ('Off','OFF',NULL,NULL,0),('Early','EARLY','08:30','16:30',1),('Late','LATE','09:30','18:00',1),('Long Day','LONG','08:00','18:00',1)",
   "INSERT OR IGNORE INTO rota_patterns (name, description, cycle_length_weeks) VALUES ('No Scheduled Hours','Default all-off rota pattern',1)",
-  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, d.day_of_week FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' JOIN (SELECT 0 AS day_of_week UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6) d WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 0 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 1 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 2 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 3 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 4 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 5 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
+  "INSERT OR IGNORE INTO rota_pattern_days (rota_pattern_id, shift_type_id, week_number, day_of_week) SELECT rp.id, st.id, 1, 6 FROM rota_patterns rp JOIN shift_types st ON st.code='OFF' WHERE rp.name='No Scheduled Hours'",
   "UPDATE teams SET default_rota_pattern_id=(SELECT id FROM rota_patterns WHERE name='No Scheduled Hours') WHERE default_rota_pattern_id IS NULL",
   "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('schema_version','1')"
 ];
