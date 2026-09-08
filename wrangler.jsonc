@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "supportapp",
-  "main": "src/worker.js",
+  "main": "src/worker-v3.js",
   "compatibility_date": "2026-09-08",
   "assets": {
     "directory": "./public"
