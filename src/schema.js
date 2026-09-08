@@ -43,9 +43,27 @@ const V2_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='2' WHERE key='schema_version'"
 ];
 
-async function applyStatements(db, statements) {
+const V3_SCHEMA_STATEMENTS = [
+  "ALTER TABLE employees ADD COLUMN username TEXT",
+  "ALTER TABLE employees ADD COLUMN email TEXT",
+  "ALTER TABLE employees ADD COLUMN external_identity TEXT",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_username ON employees(username) WHERE username IS NOT NULL",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_email ON employees(email) WHERE email IS NOT NULL",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_external_identity ON employees(external_identity) WHERE external_identity IS NOT NULL",
+  "CREATE TABLE IF NOT EXISTS employee_roles (employee_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY (employee_id, role_id), FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE, FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE)",
+  "UPDATE employees SET username=(SELECT u.username FROM users u WHERE u.id=employees.user_id), email=(SELECT u.email FROM users u WHERE u.id=employees.user_id), external_identity=(SELECT u.external_identity FROM users u WHERE u.id=employees.user_id) WHERE user_id IS NOT NULL",
+  "INSERT OR IGNORE INTO employee_roles (employee_id, role_id) SELECT e.id, ur.role_id FROM employees e JOIN user_roles ur ON ur.user_id=e.user_id WHERE e.user_id IS NOT NULL",
+  "UPDATE app_meta SET value='3' WHERE key='schema_version'"
+];
+
+async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
-    await db.prepare(statement).run();
+    try {
+      await db.prepare(statement).run();
+    } catch (error) {
+      if (ignoreDuplicateColumns && String(error?.message || error).includes('duplicate column name')) continue;
+      throw error;
+    }
   }
 }
 
@@ -65,5 +83,10 @@ export async function ensureSchema(db) {
 
   if (version < 2) {
     await applyStatements(db, V2_SCHEMA_STATEMENTS);
+    version = 2;
+  }
+
+  if (version < 3) {
+    await applyStatements(db, V3_SCHEMA_STATEMENTS, true);
   }
 }
