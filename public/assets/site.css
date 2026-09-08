@@ -5,7 +5,7 @@ Corporate Theme
 -----------------------------------------------------------
 Claritas corporate styling for the Support Portal.
 
-Version: 0.4
+Version: 0.5
 ===========================================================
 */
 
@@ -74,6 +74,8 @@ textarea:focus { outline: 2px solid var(--primary); }
 .checkbox-label input[type="checkbox"] { width: auto; max-width: none; }
 .pattern-days { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 16px; }
 .pattern-days select { max-width: none; }
+.manager-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 18px; max-width: 720px; margin-top: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: #F9FCFD; }
+.manager-grid .checkbox-label { margin: 0; color: var(--text); font-weight: 600; }
 
 button,
 .button { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; height: 38px; padding: 0 16px; border: none; border-radius: 4px; background: var(--primary); color: white; font-family: inherit; font-size: 0.95rem; font-weight: 600; text-decoration: none; cursor: pointer; transition: filter var(--transition), background var(--transition); }
