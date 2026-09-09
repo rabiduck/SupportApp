@@ -14,7 +14,7 @@ async function sha256(value) {
   return toHex(await crypto.subtle.digest('SHA-256', encoder.encode(value)));
 }
 
-async function derivePassword(password, salt, iterations = 150000) {
+async function derivePassword(password, salt, iterations = 100000) {
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations, hash: 'SHA-256' }, key, 256);
   return toHex(bits);
@@ -23,7 +23,7 @@ async function derivePassword(password, salt, iterations = 150000) {
 export async function setLocalPassword(db, employeeId, password) {
   if (String(password || '').length < 10) throw new Error('Password must be at least 10 characters long.');
   const salt = randomHex(16);
-  const iterations = 150000;
+  const iterations = 100000;
   const passwordHash = await derivePassword(password, salt, iterations);
   await db.prepare(`INSERT INTO employee_credentials (employee_id,password_hash,password_salt,password_iterations,updated_at)
     VALUES (?,?,?,?,CURRENT_TIMESTAMP)
@@ -35,7 +35,7 @@ export async function setLocalPassword(db, employeeId, password) {
 export async function verifyLocalPassword(db, employeeId, password) {
   const credential = await db.prepare('SELECT password_hash,password_salt,password_iterations FROM employee_credentials WHERE employee_id=?').bind(employeeId).first();
   if (!credential) return false;
-  const candidate = await derivePassword(password, credential.password_salt, Number(credential.password_iterations) || 150000);
+  const candidate = await derivePassword(password, credential.password_salt, Number(credential.password_iterations) || 100000);
   return candidate === credential.password_hash;
 }
 
