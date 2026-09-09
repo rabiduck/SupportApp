@@ -1,5 +1,6 @@
 import appWorker from './worker-v4.js';
 import configWorker from './worker-v3.js';
+import { managerEmployees } from './manager-employees.js';
 import { authenticate } from './auth/index.js';
 import { ensureSchema } from './schema.js';
 
@@ -128,8 +129,13 @@ export default {
         }
       }
 
-      if (user.isManager && !user.isSystemAdmin && isManagerConfigPath(path)) {
-        return decorateResponse(await configWorker.fetch(requestForApp, env), user, path);
+      if (user.isManager && !user.isSystemAdmin) {
+        if (path === '/employees' || /^\/employees\/\d+\/edit$/.test(path)) {
+          return managerEmployees(request, env.DB, user);
+        }
+        if (isManagerConfigPath(path)) {
+          return decorateResponse(await configWorker.fetch(requestForApp, env), user, path);
+        }
       }
 
       const response = await appWorker.fetch(requestForApp, { ...env, AUTH_REQUIRED: 'true' });
