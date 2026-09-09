@@ -4,7 +4,7 @@
   "main": "src/worker-v5.js",
   "compatibility_date": "2026-09-08",
   "vars": {
-    "AUTH_PROVIDER": "bootstrap"
+    "AUTH_PROVIDER": "local"
   },
   "assets": {
     "directory": "./public"
