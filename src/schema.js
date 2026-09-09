@@ -79,6 +79,14 @@ const V6_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='6' WHERE key='schema_version'"
 ];
 
+const V7_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS employee_credentials (employee_id INTEGER PRIMARY KEY, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_iterations INTEGER NOT NULL DEFAULT 150000, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS auth_sessions (token_hash TEXT PRIMARY KEY, employee_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE)",
+  "CREATE INDEX IF NOT EXISTS idx_auth_sessions_employee ON auth_sessions(employee_id)",
+  "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at)",
+  "UPDATE app_meta SET value='7' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -104,5 +112,6 @@ export async function ensureSchema(db) {
   if (version < 3) { await applyStatements(db, V3_SCHEMA_STATEMENTS, true); version = 3; }
   if (version < 4) { await applyStatements(db, V4_SCHEMA_STATEMENTS); version = 4; }
   if (version < 5) { await applyStatements(db, V5_SCHEMA_STATEMENTS); version = 5; }
-  if (version < 6) { await applyStatements(db, V6_SCHEMA_STATEMENTS); }
+  if (version < 6) { await applyStatements(db, V6_SCHEMA_STATEMENTS); version = 6; }
+  if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); }
 }
