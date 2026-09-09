@@ -1,8 +1,10 @@
 import { authenticateBootstrap } from './bootstrap.js';
 import { authenticateCloudflare } from './cloudflare.js';
+import { authenticateLocal } from './local.js';
 
 const PROVIDERS = {
   bootstrap: authenticateBootstrap,
+  local: authenticateLocal,
   'cloudflare-access': authenticateCloudflare,
 };
 
