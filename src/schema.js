@@ -64,6 +64,15 @@ const V4_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='4' WHERE key='schema_version'"
 ];
 
+const V5_SCHEMA_STATEMENTS = [
+  "INSERT OR IGNORE INTO roles (name, description, is_system) VALUES ('Employee','Standard SupportApp employee with rota access',1)",
+  "UPDATE employee_roles SET role_id=(SELECT id FROM roles WHERE name='Employee') WHERE role_id=(SELECT id FROM roles WHERE name='Engineer')",
+  "DELETE FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE name='Manager')",
+  "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.name='Manager' AND p.code IN ('MANAGE_USERS','MANAGE_TEAMS','MANAGE_EMPLOYEES','MANAGE_ROTA')",
+  "UPDATE roles SET description='Manager or team leader with access to operational configuration' WHERE name='Manager'",
+  "UPDATE app_meta SET value='5' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -101,5 +110,10 @@ export async function ensureSchema(db) {
 
   if (version < 4) {
     await applyStatements(db, V4_SCHEMA_STATEMENTS);
+    version = 4;
+  }
+
+  if (version < 5) {
+    await applyStatements(db, V5_SCHEMA_STATEMENTS);
   }
 }
