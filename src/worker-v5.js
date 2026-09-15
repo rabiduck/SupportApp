@@ -148,6 +148,11 @@ async function decorateResponse(response, user, path, localAuth = false, db = nu
   if (localAuth && path === '/employees' && (user.isManager || user.isSystemAdmin)) {
     text = text.replace(/<a class="button secondary" href="\/employees\/(\d+)\/edit">Edit<\/a>/g, (match, id) => `${match}<a class="button secondary" href="/employees/${id}/password">Password</a>`);
   }
+  // Most application pages are rendered by the older workers and then decorated here,
+  // so inject the live mailbox polling script during decoration as well.
+  if (!text.includes('/api/notifications/unread-count')) {
+    text = text.replace('</body>', `${notificationPollScript()}</body>`);
+  }
   return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
