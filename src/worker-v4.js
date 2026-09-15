@@ -198,6 +198,7 @@ async function editTeamPage(db, id, auth) {
       <label>Description<textarea name="description" rows="3" maxlength="255">${h(team.description || '')}</textarea></label>
       <label>Default Rota Pattern<select name="default_rota_pattern_id" required>${options(patterns, team.default_rota_pattern_id)}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date" value="${h(team.default_pattern_start_date || '')}"></label>
+      <div style="margin:18px 0;padding:14px;border:1px solid #b9dce5;border-radius:6px;background:#f7fcfd"><strong style="display:block;margin-bottom:8px">Gatekeeping</strong><label style="display:flex;align-items:center;gap:10px;margin:0"><input type="checkbox" name="gatekeeper_enabled" value="1" ${team.gatekeeper_enabled ? 'checked' : ''} style="width:auto"> Include this team in the Gatekeeper rotation</label></div>
       <label>Managers</label>${managerCheckboxes(managers, selected)}
       <label class="checkbox-label"><input type="checkbox" name="is_active" ${team.is_active ? 'checked' : ''}> Active</label>
       <div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/teams">Cancel</a></div>
@@ -207,8 +208,8 @@ async function editTeamPage(db, id, auth) {
 
 async function updateTeam(request, db, id) {
   const form = await request.formData();
-  await db.prepare('UPDATE teams SET department_id=?,name=?,description=?,default_rota_pattern_id=?,default_pattern_start_date=?,is_active=? WHERE id=?')
-    .bind(Number(form.get('department_id')),String(form.get('name')||'').trim(),String(form.get('description')||'').trim()||null,Number(form.get('default_rota_pattern_id'))||null,String(form.get('default_pattern_start_date')||'').trim()||null,form.has('is_active')?1:0,id).run();
+  await db.prepare('UPDATE teams SET department_id=?,name=?,description=?,default_rota_pattern_id=?,default_pattern_start_date=?,gatekeeper_enabled=?,is_active=? WHERE id=?')
+    .bind(Number(form.get('department_id')),String(form.get('name')||'').trim(),String(form.get('description')||'').trim()||null,Number(form.get('default_rota_pattern_id'))||null,String(form.get('default_pattern_start_date')||'').trim()||null,form.has('gatekeeper_enabled')?1:0,form.has('is_active')?1:0,id).run();
   await saveTeamManagers(db, id, form.getAll('manager_ids'));
 }
 
