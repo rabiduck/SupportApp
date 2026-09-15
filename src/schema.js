@@ -114,6 +114,14 @@ const V10_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='10' WHERE key='schema_version'"
 ];
 
+const V11_SCHEMA_STATEMENTS = [
+  "ALTER TABLE employee_leave_entitlements RENAME COLUMN entitlement_hours TO entitlement_days",
+  "ALTER TABLE employee_leave_entitlements RENAME COLUMN adjustment_hours TO adjustment_days",
+  "ALTER TABLE leave_requests ADD COLUMN start_portion TEXT NOT NULL DEFAULT 'FULL' CHECK (start_portion IN ('FULL','AM','PM'))",
+  "ALTER TABLE leave_requests ADD COLUMN end_portion TEXT NOT NULL DEFAULT 'FULL' CHECK (end_portion IN ('FULL','AM','PM'))",
+  "UPDATE app_meta SET value='11' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -143,5 +151,6 @@ export async function ensureSchema(db) {
   if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); version = 7; }
   if (version < 8) { await applyStatements(db, V8_SCHEMA_STATEMENTS); version = 8; }
   if (version < 9) { await applyStatements(db, V9_SCHEMA_STATEMENTS); version = 9; }
-  if (version < 10) { await applyStatements(db, V10_SCHEMA_STATEMENTS, true); }
+  if (version < 10) { await applyStatements(db, V10_SCHEMA_STATEMENTS, true); version = 10; }
+  if (version < 11) { await applyStatements(db, V11_SCHEMA_STATEMENTS, true); }
 }
