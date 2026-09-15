@@ -31,6 +31,8 @@ const shell = (title, content, active = '') => `<!doctype html>
   <nav class="side-nav">
     <a class="${active === 'Dashboard' ? 'active' : ''}" href="/">Dashboard</a>
     <a class="${active === 'Rota' ? 'active' : ''}" href="/rota">Rota</a>
+    <a class="${active === 'On Call' ? 'active' : ''}" href="/on-call">On Call</a>
+    <a class="${active === 'WFH Requests' ? 'active' : ''}" href="/wfh-requests">WFH Requests</a>
     <a class="${active === 'Users' ? 'active' : ''}" href="/users">Users</a>
     <a class="${active === 'Teams' ? 'active' : ''}" href="/teams">Teams</a>
     <a class="${active === 'Employees' ? 'active' : ''}" href="/employees">Employees</a>
