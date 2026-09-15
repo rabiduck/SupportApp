@@ -135,7 +135,14 @@ async function calendarRota(request, db) {
     const tr=td.closest('tr'), idx=[...tr.children].indexOf(td)-2;
     if(idx<0)return;
     const name=tr.querySelector('.employee-cell strong')?.textContent, date=${JSON.stringify(dates.map(isoDate))}[idx];
-    if(name&&date) location.href='/day?employee='+encodeURIComponent(name)+'&date='+date;
+    if(!name||!date)return;
+    // The Day Actions endpoint owns authorization. Ignore access-denied responses here
+    // so clicking another employee's row remains a harmless no-op rather than surfacing
+    // a Worker exception/error page.
+    fetch('/day?employee='+encodeURIComponent(name)+'&date='+date,{redirect:'manual'}).then(r=>{
+      if(r.ok) location.href='/day?employee='+encodeURIComponent(name)+'&date='+date;
+    }).catch(()=>{});
+
   }));
   </script>`), { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
