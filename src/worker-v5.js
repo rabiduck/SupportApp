@@ -275,6 +275,43 @@ function balanceCard(b) {
   return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
 }
 
+async function wfhRequestPage(request,db,user){
+  const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
+  if(employee!==user.display_name)return errorPage('WFH requests can only be submitted from your own rota row.',user,403);
+  const existing=await row(db,"SELECT id,status FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved')",user.id,date);
+  if(existing)return errorPage(`A WFH request already exists for ${date} (${existing.status}).`,user,400);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),notes=String(form.get('employee_notes')||'').trim()||null,managerRecord=user.isManager;
+    const made=await db.prepare("INSERT INTO wfh_requests(employee_id,request_date,status,employee_notes,reviewed_by,reviewed_at,manager_notes,entry_mode) VALUES(?,?,?,?,?,?,?,?)").bind(user.id,date,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
+    if(!managerRecord){const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);for(const m of managers)await createNotification(db,m.id,'wfh_request',`WFH request · ${user.display_name}`,date,`/wfh-requests/${Number(made.meta?.last_row_id)}`);}
+    return redirect(request,`/rota?week=${date}`);
+  }
+  const content=`<div class="form-card"><h2>${user.isManager?'Record WFH':'Request WFH'}</h2><p><strong>${h(date)}</strong></p>${user.isManager?'<p class="muted">Manager WFH is recorded directly as approved because authorisation takes place outside SupportApp.</p>':''}<form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">${user.isManager?'Record WFH':'Submit Request'}</button><a class="button secondary" href="/rota?week=${date}">Cancel</a></div></form></div>`;
+  return appPage(user.isManager?'Record WFH':'Request WFH','Single-day working from home.',content,user,'Rota',db);
+}
+
+async function wfhRequestsPage(request,db,user){
+ const reqs=await rows(db,`SELECT w.*,e.display_name,t.name team_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id JOIN teams t ON t.id=e.team_id WHERE e.team_id IN (${user.managedTeamIds.map(()=>'?').join(',')||'NULL'}) ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END,w.request_date DESC`,...user.managedTeamIds);
+ const table=reqs.length?`<table><thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>${reqs.map(r=>`<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.request_date)}</td><td>${leaveStatus(r.status)}</td><td><a class="button secondary" href="/wfh-requests/${r.id}">${r.status==='pending'?'Review':'View'}</a></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No WFH requests.</div>';
+ return appPage('WFH Requests','Review working from home requests for your managed teams.',`<div class="table-card">${table}</div>`,user,'WFH Requests',db);
+}
+
+async function wfhReviewPage(request,db,user,id){
+ const item=await row(db,`SELECT w.*,e.display_name,e.team_id FROM wfh_requests w JOIN employees e ON e.id=w.employee_id WHERE w.id=?`,id);
+ if(!item)return errorPage('WFH request not found.',user,404);
+ if(!user.managedTeamIds.includes(Number(item.team_id)))return accessPage('Access Denied','This WFH request is outside your management scope.',403);
+ if(request.method.toUpperCase()==='POST'&&item.status==='pending'){
+   const form=await request.formData(),decision=String(form.get('decision')||'').toLowerCase(),notes=String(form.get('manager_notes')||'').trim()||null;
+   if(!['approved','rejected'].includes(decision))return errorPage('Choose Approve or Reject.',user,400);
+   await db.prepare('UPDATE wfh_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?').bind(decision,user.id,notes,id).run();
+   await createNotification(db,item.employee_id,'wfh_review',`WFH request ${decision}`,`${item.request_date}${notes?` · ${notes}`:''}`,'/rota');
+   return redirect(request,'/wfh-requests');
+ }
+ const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
+ return appPage('Review WFH Request','Review a single-day WFH request.',content,user,'WFH Requests',db);
+}
+
 async function myLeavePage(request, db, user) {
   const method = request.method.toUpperCase();
   let message = '';
@@ -515,6 +552,10 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/wfh/request' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhRequestPage(request,env.DB,user);
+      if (user.isManager && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
+      if (user.isManager && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
+
       if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
       if (/^\/leave\/\d+\/cancel$/.test(path) && request.method.toUpperCase() === 'POST') return cancelOwnLeave(request, env.DB, user, Number(path.split('/')[2]));
       if (/^\/leave\/\d+\/change$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return changeOwnApprovedLeave(request, env.DB, user, Number(path.split('/')[2]));
@@ -531,7 +572,7 @@ export default {
       const requestForApp = withIdentityHeader(request, user.email || identity.email || null);
       if (!user.isManager && !user.isSystemAdmin) {
         if (path === '/') return redirect(request, '/rota');
-        if (!path.startsWith('/rota') && !path.startsWith('/assets/')) return accessPage('Access Denied', 'Employees have rota access only.', 403);
+        if (!path.startsWith('/rota') && !path.startsWith('/wfh/') && !path.startsWith('/assets/')) return accessPage('Access Denied', 'Employees have rota access only.', 403);
       }
 
       if (user.isManager && !user.isSystemAdmin) {
