@@ -85,6 +85,8 @@ async function calendarRota(request, db) {
     leaveByEmployee.get(Number(leave.employee_id)).push(leave);
   }
 
+  const gateTeams=await rows(db,'SELECT id,gatekeeper_enabled FROM teams WHERE is_active=1'),gateSettings=await rows(db,'SELECT * FROM gatekeeper_settings'),gateOverrides=await rows(db,'SELECT * FROM gatekeeper_overrides WHERE is_active=1 AND start_date<=? AND end_date>=? ORDER BY id',weekEnd,isoDate(weekStart)),gateEmployees=await rows(db,'SELECT id,team_id,COALESCE(gatekeeper_order,999999) gatekeeper_order,display_name FROM employees WHERE is_active=1 ORDER BY team_id,gatekeeper_order,display_name,id');
+  const gatekeeperFor=(eid,teamId,day)=>{const dt=new Date(day+'T12:00:00Z');if(dt.getUTCDay()===0||dt.getUTCDay()===6)return false;if(!gateTeams.find(t=>Number(t.id)===Number(teamId))?.gatekeeper_enabled)return false;const ov=[...gateOverrides].reverse().find(o=>Number(o.team_id)===Number(teamId)&&o.start_date<=day&&o.end_date>=day);if(ov)return Number(ov.employee_id)===Number(eid);const ms=gateEmployees.filter(e=>Number(e.team_id)===Number(teamId)),set=gateSettings.find(s=>Number(s.team_id)===Number(teamId));if(!ms.length||!set?.anchor_monday)return false;const mon=(()=>{const d=new Date(day+'T12:00:00Z'),x=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-x);return d.toISOString().slice(0,10)})(),weeks=Math.floor((new Date(mon+'T12:00:00Z')-new Date(set.anchor_monday+'T12:00:00Z'))/604800000),a=Math.max(0,ms.findIndex(m=>Number(m.id)===Number(set.anchor_employee_id))),idx=((a+weeks)%ms.length+ms.length)%ms.length;return Number(ms[idx]?.id)===Number(eid);};
   const oncallMembers = await rows(db,`SELECT m.*,e.display_name FROM oncall_members m JOIN employees e ON e.id=m.employee_id WHERE m.is_active=1 AND e.is_active=1 ORDER BY m.display_order,m.id`);
   const oncallSettings = await row(db,'SELECT * FROM oncall_settings WHERE id=1');
   const oncallOverrides = await rows(db,`SELECT * FROM oncall_overrides WHERE is_active=1 AND start_date<=? AND end_date>=? ORDER BY id`,weekEnd,isoDate(weekStart));
@@ -112,6 +114,8 @@ async function calendarRota(request, db) {
       const code = shift?.code || 'OFF';
       const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}${overrideShift ? ` · override (scheduled ${scheduledShift?.code || 'OFF'})` : ''}` : 'Off';
       const oncallBadge = oncallFor(e.id,day) ? '<span class="oncall-badge" title="On Call">📱</span>' : '';
+      const gatekeeperBadge = gatekeeperFor(e.id,e.team_id,day) ? '<span class="gatekeeper-badge" title="Gatekeeper">🏰</span>' : '';
+      const dutyBadges = gatekeeperBadge + oncallBadge;
       const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
       const absence = absenceMap.get(`${e.id}:${day}`), sick = sicknessMap.get(`${e.id}:${day}`);
