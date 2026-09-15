@@ -87,6 +87,14 @@ const V7_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='7' WHERE key='schema_version'"
 ];
 
+const V8_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')), employee_notes TEXT, requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_by INTEGER, reviewed_at TEXT, manager_notes TEXT, FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE, FOREIGN KEY (reviewed_by) REFERENCES employees(id))",
+  "CREATE INDEX IF NOT EXISTS idx_leave_requests_employee ON leave_requests(employee_id)",
+  "CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status)",
+  "CREATE INDEX IF NOT EXISTS idx_leave_requests_dates ON leave_requests(start_date,end_date)",
+  "UPDATE app_meta SET value='8' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -113,5 +121,6 @@ export async function ensureSchema(db) {
   if (version < 4) { await applyStatements(db, V4_SCHEMA_STATEMENTS); version = 4; }
   if (version < 5) { await applyStatements(db, V5_SCHEMA_STATEMENTS); version = 5; }
   if (version < 6) { await applyStatements(db, V6_SCHEMA_STATEMENTS); version = 6; }
-  if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); }
+  if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); version = 7; }
+  if (version < 8) { await applyStatements(db, V8_SCHEMA_STATEMENTS); }
 }
