@@ -133,13 +133,17 @@ function activeForPath(path) {
   return '';
 }
 
-async function decorateResponse(response, user, path, localAuth = false) {
+async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
+function mailboxHtml(count) { return `<a href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉${count ? `<span style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px">${count > 9 ? '9+' : count}</span>` : ''}</a>`; }
+
+async function decorateResponse(response, user, path, localAuth = false, db = null) {
   const type = response.headers.get('content-type') || '';
   if (!type.includes('text/html')) return response;
   let text = await response.text();
   text = text.replace(/<nav class="side-nav">[\s\S]*?<\/nav>/, `<nav class="side-nav">${nav(user, activeForPath(path))}</nav>`);
   const signout = localAuth ? ' · <a href="/logout" style="color:inherit">Sign out</a>' : '';
-  text = text.replace(/<div class="user-area">[\s\S]*?<\/div>/, `<div class="user-area">${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div>`);
+  const count = db ? await unreadCount(db, user.id) : 0;
+  text = text.replace(/<div class="user-area">[\s\S]*?<\/div>/, `<div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div>`);
   if (localAuth && path === '/employees' && (user.isManager || user.isSystemAdmin)) {
     text = text.replace(/<a class="button secondary" href="\/employees\/(\d+)\/edit">Edit<\/a>/g, (match, id) => `${match}<a class="button secondary" href="/employees/${id}/password">Password</a>`);
   }
@@ -173,15 +177,37 @@ function passwordForm(target, message = '') {
   return simplePage(`Set password · ${target.display_name}`, `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card" style="max-width:520px"><p class="muted">Setting a new password also signs this user out of any existing sessions.</p><form method="post"><label>New password<input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus></label><label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" minlength="10" required></label><div class="action-bar"><button type="submit">Set password</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>`);
 }
 
-function appPage(title, description, content, user, active = '') {
+async function appPage(title, description, content, user, active = '', db = null) {
   const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
+  const count = db ? await unreadCount(db, user.id) : 0;
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
   return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
 function leaveStatus(status) {
   const label = String(status || '').replace(/^./, (x) => x.toUpperCase());
   return `<span class="status-badge ${status === 'approved' ? 'status-active' : status === 'rejected' || status === 'cancelled' ? 'status-inactive' : ''}">${h(label)}</span>`;
+}
+
+async function createNotification(db, recipientId, type, title, message, targetUrl = null) {
+  await db.prepare('INSERT INTO notifications (recipient_employee_id,notification_type,title,message,target_url) VALUES (?,?,?,?,?)').bind(recipientId,type,title,message,targetUrl).run();
+}
+
+async function notificationsPage(request, db, user) {
+  if (request.method.toUpperCase() === 'POST') {
+    await db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP) WHERE recipient_employee_id=?').bind(user.id).run();
+    return redirect(request, '/notifications');
+  }
+  const items = await rows(db, 'SELECT * FROM notifications WHERE recipient_employee_id=? ORDER BY created_at DESC,id DESC LIMIT 100', user.id);
+  const content = items.length ? `<div class="table-card"><table><thead><tr><th></th><th>Message</th><th>Received</th></tr></thead><tbody>${items.map(n=>`<tr><td>${n.read_at?'':'<strong>●</strong>'}</td><td><a href="/notifications/${n.id}"><strong>${h(n.title)}</strong></a><br><span class="muted">${h(n.message)}</span></td><td>${h(String(n.created_at||'').slice(0,16).replace('T',' '))}</td></tr>`).join('')}</tbody></table></div><form method="post" class="section-gap"><button type="submit" class="secondary">Mark all read</button></form>` : '<div class="empty">Your inbox is empty.</div>';
+  return appPage('Notifications', 'Internal SupportApp messages and workflow updates.', content, user, '', db);
+}
+
+async function notificationOpen(request, db, user, id) {
+  const n = await row(db, 'SELECT * FROM notifications WHERE id=? AND recipient_employee_id=?', id, user.id);
+  if (!n) return accessPage('Notification not found','That notification does not exist.',404);
+  await db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP) WHERE id=?').bind(id).run();
+  return redirect(request, n.target_url || '/notifications');
 }
 
 async function myLeavePage(request, db, user) {
@@ -197,7 +223,10 @@ async function myLeavePage(request, db, user) {
     } else if (endDate < startDate) {
       message = 'End date cannot be before start date.';
     } else {
-      await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,status,employee_notes) VALUES (?,?,?,'pending',?)").bind(user.id,startDate,endDate,notes).run();
+      const created = await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,status,employee_notes) VALUES (?,?,?,'pending',?)").bind(user.id,startDate,endDate,notes).run();
+      const leaveId = Number(created.meta?.last_row_id);
+      const managers = await rows(db, `SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id LEFT JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND (r.name='SystemAdmin' OR (r.name='Manager' AND tm.team_id=?)) AND e.id<>?`, user.team_id,user.id);
+      for (const manager of managers) await createNotification(db, manager.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate}${endDate!==startDate?` → ${endDate}`:''}`, `/leave-requests/${leaveId}`);
       return redirect(request, '/leave');
     }
   }
@@ -205,7 +234,7 @@ async function myLeavePage(request, db, user) {
   const requests = await rows(db, `SELECT lr.*, reviewer.display_name AS reviewer_name FROM leave_requests lr LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.employee_id=? ORDER BY lr.requested_at DESC,lr.id DESC`, user.id);
   const table = requests.length ? `<table><thead><tr><th>Dates</th><th>Status</th><th>Notes</th><th>Requested</th><th>Reviewed By</th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.start_date)}</strong>${r.end_date !== r.start_date ? ` → <strong>${h(r.end_date)}</strong>` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td>${h(String(r.requested_at || '').slice(0,16).replace('T',' '))}</td><td>${h(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">You have not submitted any annual leave requests yet.</div>';
   const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>End Date<input name="end_date" type="date" required></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
-  return appPage('My Leave', 'Request annual leave and track the status of your requests.', content, user, 'My Leave');
+  return appPage('My Leave', 'Request annual leave and track the status of your requests.', content, user, 'My Leave', db);
 }
 
 async function leaveRequestsPage(request, db, user) {
@@ -213,7 +242,7 @@ async function leaveRequestsPage(request, db, user) {
   const scopeParams = user.isSystemAdmin ? [] : user.managedTeamIds;
   const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scopeSql} ORDER BY CASE lr.status WHEN 'pending' THEN 0 ELSE 1 END,lr.start_date,lr.requested_at`, ...scopeParams);
   const table = requests.length ? `<table><thead><tr><th>Employee</th><th>Team</th><th>Dates</th><th>Status</th><th>Employee Note</th><th></th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.start_date)}${r.end_date !== r.start_date ? ` → ${h(r.end_date)}` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td><a class="button secondary" href="/leave-requests/${r.id}">${r.status === 'pending' ? 'Review' : 'View'}</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">There are no leave requests in your management scope.</div>';
-  return appPage('Leave Requests', 'Review annual leave requests for employees in your managed teams.', `<div class="table-card">${table}</div>`, user, 'Leave Requests');
+  return appPage('Leave Requests', 'Review annual leave requests for employees in your managed teams.', `<div class="table-card">${table}</div>`, user, 'Leave Requests', db);
 }
 
 async function leaveRequestReviewPage(request, db, user, id) {
@@ -228,6 +257,8 @@ async function leaveRequestReviewPage(request, db, user, id) {
     const notes = String(form.get('manager_notes') || '').trim() || null;
     if (!['approved','rejected'].includes(decision)) return accessPage('Invalid decision', 'Choose Approve or Reject.', 400);
     await db.prepare('UPDATE leave_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status=\'pending\'').bind(decision,user.id,notes,id).run();
+    const verb = decision === 'approved' ? 'approved' : 'rejected';
+    await createNotification(db, item.employee_id, 'leave_review', `Annual leave ${verb}`, `${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}${notes?` · ${notes}`:''}`, '/leave');
     return redirect(request, '/leave-requests');
   }
 
@@ -244,7 +275,7 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const rotaTable = `<table><thead><tr><th>Date</th><th>Scheduled Shift</th><th>Leave Impact</th></tr></thead><tbody>${rotaDays.map((d)=>`<tr><td>${h(d.date)}</td><td>${h(d.shift)}</td><td>${d.working?'Working day → Leave':'Non-working day'}</td></tr>`).join('')}</tbody></table>`;
   const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>`;
   const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)}${item.end_date!==item.start_date?` → ${h(item.end_date)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div><div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
-  return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests');
+  return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
 
 export default {
@@ -275,6 +306,9 @@ export default {
 
       if (localAuth && /^\/employees\/\d+\/password$/.test(path)) return passwordPage(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
+      if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
+
       if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
 
       if ((user.isManager || user.isSystemAdmin) && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
@@ -287,11 +321,11 @@ export default {
       }
 
       if (user.isManager && !user.isSystemAdmin) {
-        if (path === '/employees' || /^\/employees\/\d+\/edit$/.test(path)) return decorateResponse(await managerEmployees(request, env.DB, user), user, path, localAuth);
-        if (isManagerConfigPath(path)) return decorateResponse(await configWorker.fetch(requestForApp, env), user, path, localAuth);
+        if (path === '/employees' || /^\/employees\/\d+\/edit$/.test(path)) return decorateResponse(await managerEmployees(request, env.DB, user), user, path, localAuth, env.DB);
+        if (isManagerConfigPath(path)) return decorateResponse(await configWorker.fetch(requestForApp, env), user, path, localAuth, env.DB);
       }
 
-      return decorateResponse(await appWorker.fetch(requestForApp, { ...env, AUTH_REQUIRED: 'true' }), user, path, localAuth);
+      return decorateResponse(await appWorker.fetch(requestForApp, { ...env, AUTH_REQUIRED: 'true' }), user, path, localAuth, env.DB);
     } catch (error) {
       console.error(error);
       return accessPage('SupportApp Error', error?.message || String(error), 500);
