@@ -134,7 +134,8 @@ function activeForPath(path) {
 }
 
 async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
-function mailboxHtml(count) { return `<a href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉${count ? `<span style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px">${count > 9 ? '9+' : count}</span>` : ''}</a>`; }
+function mailboxHtml(count) { return `<a id="notification-mailbox" href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉<span id="notification-badge" style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px;${count ? '' : 'display:none;'}">${count > 9 ? '9+' : count}</span></a>`; }
+function notificationPollScript() { return `<script>(()=>{const refresh=async()=>{if(document.hidden)return;try{const r=await fetch('/api/notifications/unread-count',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();const b=document.getElementById('notification-badge');if(!b)return;const n=Number(d.unread)||0;b.textContent=n>9?'9+':String(n);b.style.display=n?'':'none';}catch(_){}};setInterval(refresh,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});})();</script>`; }
 
 async function decorateResponse(response, user, path, localAuth = false, db = null) {
   const type = response.headers.get('content-type') || '';
@@ -180,7 +181,7 @@ function passwordForm(target, message = '') {
 async function appPage(title, description, content, user, active = '', db = null) {
   const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
   const count = db ? await unreadCount(db, user.id) : 0;
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}</body></html>`;
   return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
@@ -317,6 +318,11 @@ export default {
       }
 
       if (localAuth && /^\/employees\/\d+\/password$/.test(path)) return passwordPage(request, env.DB, user, Number(path.split('/')[2]));
+
+      if (path === '/api/notifications/unread-count' && request.method.toUpperCase() === 'GET') {
+        const unread = await unreadCount(env.DB, user.id);
+        return new Response(JSON.stringify({ unread }), { status: 200, headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' } });
+      }
 
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
