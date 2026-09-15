@@ -160,6 +160,16 @@ const V17_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='17' WHERE key='schema_version'"
 ];
 
+const V18_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS oncall_members (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL UNIQUE, display_order INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, removed_at TEXT, FOREIGN KEY(employee_id) REFERENCES employees(id))",
+ "CREATE TABLE IF NOT EXISTS oncall_settings (id INTEGER PRIMARY KEY CHECK(id=1), anchor_friday TEXT, anchor_member_id INTEGER, FOREIGN KEY(anchor_member_id) REFERENCES oncall_members(id))",
+ "INSERT OR IGNORE INTO oncall_settings(id) VALUES(1)",
+ "CREATE TABLE IF NOT EXISTS oncall_cover_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_id INTEGER NOT NULL, scope TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, mode TEXT NOT NULL, named_employee_id INTEGER, reason TEXT, status TEXT NOT NULL DEFAULT 'pending', accepted_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT, FOREIGN KEY(requester_id) REFERENCES employees(id), FOREIGN KEY(named_employee_id) REFERENCES employees(id), FOREIGN KEY(accepted_by) REFERENCES employees(id))",
+ "CREATE TABLE IF NOT EXISTS oncall_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, employee_id INTEGER NOT NULL, source TEXT NOT NULL, source_id INTEGER, notes TEXT, recorded_by INTEGER NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_active INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(recorded_by) REFERENCES employees(id))",
+ "CREATE INDEX IF NOT EXISTS idx_oncall_overrides_dates ON oncall_overrides(start_date,end_date,is_active)",
+ "UPDATE app_meta SET value='18' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -196,5 +206,6 @@ export async function ensureSchema(db) {
   if (version < 14) { await applyStatements(db, V14_SCHEMA_STATEMENTS); version = 14; }
   if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); version = 15; }
   if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); version = 16; }
-  if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); }
+  if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); version = 17; }
+  if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); }
 }
