@@ -121,12 +121,12 @@ async function calendarRota(request, db) {
       const absence = absenceMap.get(`${e.id}:${day}`), sick = sicknessMap.get(`${e.id}:${day}`);
       if (sick && shift?.is_working_day) {
         let p='FULL'; if(day===sick.start_date)p=sick.start_portion||'FULL'; if(day===sick.end_date)p=sick.end_portion||'FULL';
-        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>${oncallBadge}`, line=`<strong>SICK${p==='FULL'?'':` ${h(p)}`}</strong>`;
+        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>${dutyBadges}`, line=`<strong>SICK${p==='FULL'?'':` ${h(p)}`}</strong>`;
         return `<td class="rota-cell shift-leave ${day===today?'today':''}" title="${h(`Sickness · scheduled ${code}`)}">${p==='PM'?`${shiftLine}<br>${line}`:`${line}<br>${shiftLine}`}</td>`;
       }
       if (absence && shift?.is_working_day) {
         let p='FULL'; if(day===absence.start_date)p=absence.start_portion||'FULL'; if(day===absence.end_date)p=absence.end_portion||'FULL';
-        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>${oncallBadge}`, line=`<strong>${h(absence.type_name.toUpperCase())}${p==='FULL'?'':` ${h(p)}`}</strong>`;
+        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>${dutyBadges}`, line=`<strong>${h(absence.type_name.toUpperCase())}${p==='FULL'?'':` ${h(p)}`}</strong>`;
         return `<td class="rota-cell shift-leave ${day===today?'today':''}" title="${h(`${absence.type_name} · scheduled ${code}`)}">${p==='PM'?`${shiftLine}<br>${line}`:`${line}<br>${shiftLine}`}</td>`;
       }
       const wfh = wfhMap.get(`${e.id}:${day}`);
@@ -135,7 +135,7 @@ async function calendarRota(request, db) {
         if (day === approvedLeave.start_date) portion = approvedLeave.start_portion || 'FULL';
         if (day === approvedLeave.end_date) portion = approvedLeave.end_portion || 'FULL';
         const detail = portion === 'FULL' ? 'Annual Leave' : `Annual Leave · ${portion} half day`;
-        const shiftLine = `<span class="rota-underlying-shift">${h(code)}</span>${oncallBadge}`;
+        const shiftLine = `<span class="rota-underlying-shift">${h(code)}</span>${dutyBadges}`;
         const leaveLine = `<strong>LEAVE${portion === 'FULL' ? '' : ` ${h(portion)}`}</strong>`;
         const wfhLine = wfh && portion !== 'FULL' ? `<br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong>` : '';
         const display = portion === 'PM'
@@ -143,8 +143,8 @@ async function calendarRota(request, db) {
           : `${leaveLine}<br>${shiftLine}${wfhLine}`;
         return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}${wfh && portion!=='FULL' ? ` · WFH ${wfh}` : ''}`)}">${display}</td>`;
       }
-      if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong>${oncallBadge}<br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
-      return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong>${oncallBadge}</td>`;
+      if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong>${dutyBadges}<br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
+      return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong>${dutyBadges}</td>`;
     }).join('');
     return `${group}<tr><td class="employee-cell"><strong>${h(e.display_name)}</strong><br><span class="muted">${h(e.pattern_name)} · ${cycleWeek}/${e.cycle_length_weeks}</span></td><td class="team-cell">${h(e.team_name)}</td>${cells}</tr>`;
   }).join('');
