@@ -276,6 +276,24 @@ function balanceCard(b) {
   return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
 }
 
+async function recordAttendancePage(request,db,user,kind){
+ const url=new URL(request.url),employee=String(url.searchParams.get('employee')||''),date=String(url.searchParams.get('date')||'');
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ const target=await row(db,'SELECT id,display_name,team_id FROM employees WHERE display_name=? AND is_active=1',employee);
+ if(!target||!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Invalid employee or date.',user,400);
+ const types=kind==='absence'?await rows(db,'SELECT id,name FROM absence_types WHERE is_active=1 ORDER BY name'):[];
+ if(request.method.toUpperCase()==='POST'){
+  const form=await request.formData(),end=String(form.get('end_date')||date),sp=String(form.get('start_portion')||'FULL'),ep=String(form.get('end_portion')||sp),notes=String(form.get('notes')||'').trim()||null;
+  if(kind==='absence'){const type=Number(form.get('absence_type_id'));await db.prepare('INSERT INTO absences(employee_id,absence_type_id,start_date,end_date,start_portion,end_portion,notes,recorded_by) VALUES(?,?,?,?,?,?,?,?)').bind(target.id,type,date,end,sp,ep,notes,user.id).run();}
+  else await db.prepare('INSERT INTO sickness(employee_id,start_date,end_date,start_portion,end_portion,notes,recorded_by) VALUES(?,?,?,?,?,?,?)').bind(target.id,date,end,sp,ep,notes,user.id).run();
+  await createNotification(db,target.id,kind+'_recorded',`${kind==='absence'?'Absence':'Sickness'} recorded by ${user.display_name}`,`${date}${end!==date?` → ${end}`:''}`,'/rota');
+  return redirect(request,`/rota?week=${date}`);
+ }
+ const typeField=kind==='absence'?`<label>Absence Type<select name="absence_type_id" required>${types.map(t=>`<option value="${t.id}">${h(t.name)}</option>`).join('')}</select></label>`:'';
+ const content=`<div class="form-card"><h2>Record ${kind==='absence'?'Absence':'Sickness'} · ${h(target.display_name)}</h2><form method="post">${typeField}<label>Start Date<input type="date" value="${h(date)}" disabled></label><label>Start Portion<select name="start_portion"><option>FULL</option><option>AM</option><option>PM</option></select></label><label>End Date<input type="date" name="end_date" value="${h(date)}" min="${h(date)}" required></label><label>End Portion<select name="end_portion"><option>FULL</option><option>AM</option><option>PM</option></select></label><label>Notes <span class="muted">(optional)</span><textarea name="notes" rows="3"></textarea></label><div class="action-bar"><button>Record ${kind==='absence'?'Absence':'Sickness'}</button><a class="button secondary" href="/day?employee=${encodeURIComponent(target.display_name)}&date=${date}">Cancel</a></div></form></div>`;
+ return appPage(`Record ${kind==='absence'?'Absence':'Sickness'}`,'Manager / Team Leader attendance record.',content,user,'Rota',db);
+}
+
 async function dayActionsPage(request,db,user){
  const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
@@ -292,6 +310,7 @@ async function dayActionsPage(request,db,user){
    if(wfh)info+=`<p><strong>WFH:</strong> ${h(wfh.status)}</p>`;
    if(!leave&&!wfh)info+='<p class="muted">No leave or WFH activity recorded for this day.</p>';
    info+='</div>';
+   if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Attendance</h2><div class="action-bar"><a class="button" href="/absence/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Absence</a><a class="button secondary" href="/sickness/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Sickness</a></div></div>`;
    if(user.isManager&&user.managedTeamIds.includes(Number(target.team_id))){
      if(leave?.status==='approved')info+=`<div class="card section-gap"><h2>Manager Actions</h2><div class="action-bar"><a class="button secondary" href="/leave-requests/${leave.id}/edit">Modify Employee Leave</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form></div></div>`;
      if(wfh&&['pending','approved'].includes(wfh.status))info+=`<div class="card section-gap"><h2>WFH</h2><div class="action-bar">${wfh.status==='pending'?`<a class="button" href="/wfh-requests/${wfh.id}">Review Request</a>`:''}<form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">Cancel WFH</button></form></div></div>`;
@@ -623,6 +642,8 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/absence/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return recordAttendancePage(request,env.DB,user,'absence');
+      if (path === '/sickness/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return recordAttendancePage(request,env.DB,user,'sickness');
       if (path === '/day' && request.method.toUpperCase()==='GET') return dayActionsPage(request,env.DB,user);
       if (path === '/leave/quick' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return quickLeavePage(request,env.DB,user);
       if (/^\/wfh\/\d+\/cancel$/.test(path) && request.method.toUpperCase()==='POST') return cancelWfh(request,env.DB,user,Number(path.split('/')[2]));
