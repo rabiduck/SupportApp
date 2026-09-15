@@ -127,6 +127,11 @@ const V12_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='12' WHERE key='schema_version'"
 ];
 
+const V13_SCHEMA_STATEMENTS = [
+  "ALTER TABLE leave_requests ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'REQUEST'",
+  "UPDATE app_meta SET value='13' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -158,5 +163,6 @@ export async function ensureSchema(db) {
   if (version < 9) { await applyStatements(db, V9_SCHEMA_STATEMENTS); version = 9; }
   if (version < 10) { await applyStatements(db, V10_SCHEMA_STATEMENTS, true); version = 10; }
   if (version < 11) { await applyStatements(db, V11_SCHEMA_STATEMENTS, true); version = 11; }
-  if (version < 12) { await applyStatements(db, V12_SCHEMA_STATEMENTS); }
+  if (version < 12) { await applyStatements(db, V12_SCHEMA_STATEMENTS); version = 12; }
+  if (version < 13) { await applyStatements(db, V13_SCHEMA_STATEMENTS, true); }
 }
