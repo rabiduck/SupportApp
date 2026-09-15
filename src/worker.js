@@ -98,21 +98,20 @@ async function calendarRota(request, db) {
       const day = isoDate(date);
       const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
+      const wfh = wfhMap.get(`${e.id}:${day}`);
       if (approvedLeave && shift?.is_working_day) {
         let portion = 'FULL';
         if (day === approvedLeave.start_date) portion = approvedLeave.start_portion || 'FULL';
         if (day === approvedLeave.end_date) portion = approvedLeave.end_portion || 'FULL';
         const detail = portion === 'FULL' ? 'Annual Leave' : `Annual Leave · ${portion} half day`;
-        // For half days, show the calendar in chronological order: AM leave precedes
-        // the underlying shift, while PM leave follows it.
         const shiftLine = `<span class="rota-underlying-shift">${h(code)}</span>`;
         const leaveLine = `<strong>LEAVE${portion === 'FULL' ? '' : ` ${h(portion)}`}</strong>`;
+        const wfhLine = wfh && portion !== 'FULL' ? `<br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong>` : '';
         const display = portion === 'PM'
-          ? `${shiftLine}<br>${leaveLine}`
-          : `${leaveLine}<br>${shiftLine}`;
-        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}`)}">${display}</td>`;
+          ? `${shiftLine}<br>${leaveLine}${wfhLine}`
+          : `${leaveLine}<br>${shiftLine}${wfhLine}`;
+        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}${wfh && portion!=='FULL' ? ` · WFH ${wfh}` : ''}`)}">${display}</td>`;
       }
-      const wfh = wfhMap.get(`${e.id}:${day}`);
       if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong><br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
       return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
     }).join('');
