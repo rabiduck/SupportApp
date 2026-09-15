@@ -170,6 +170,16 @@ const V18_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='18' WHERE key='schema_version'"
 ];
 
+const V19_SCHEMA_STATEMENTS = [
+ "ALTER TABLE teams ADD COLUMN gatekeeper_enabled INTEGER NOT NULL DEFAULT 1",
+ "ALTER TABLE employees ADD COLUMN gatekeeper_order INTEGER",
+ "CREATE TABLE IF NOT EXISTS gatekeeper_settings (team_id INTEGER PRIMARY KEY, anchor_monday TEXT, anchor_employee_id INTEGER, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(anchor_employee_id) REFERENCES employees(id))",
+ "CREATE TABLE IF NOT EXISTS gatekeeper_cover_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER NOT NULL, requester_id INTEGER NOT NULL, scope TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, mode TEXT NOT NULL, named_employee_id INTEGER, reason TEXT, status TEXT NOT NULL DEFAULT 'pending', accepted_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, resolved_at TEXT, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(requester_id) REFERENCES employees(id))",
+ "CREATE TABLE IF NOT EXISTS gatekeeper_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, employee_id INTEGER NOT NULL, source TEXT NOT NULL, source_id INTEGER, notes TEXT, recorded_by INTEGER NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_active INTEGER NOT NULL DEFAULT 1)",
+ "CREATE INDEX IF NOT EXISTS idx_gatekeeper_overrides_dates ON gatekeeper_overrides(team_id,start_date,end_date,is_active)",
+ "UPDATE app_meta SET value='19' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -207,5 +217,6 @@ export async function ensureSchema(db) {
   if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); version = 15; }
   if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); version = 16; }
   if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); version = 17; }
-  if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); }
+  if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); version = 18; }
+  if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); }
 }
