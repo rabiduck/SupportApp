@@ -371,10 +371,17 @@ async function leaveRequestReviewPage(request, db, user, id) {
   if (!user.managedTeamIds.includes(Number(item.team_id))) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
 
   if (request.method.toUpperCase() === 'POST') {
-    if (item.status !== 'pending') return redirect(request, `/leave-requests/${id}`);
     const form = await request.formData();
     const decision = String(form.get('decision') || '').toLowerCase();
     const notes = String(form.get('manager_notes') || '').trim() || null;
+    if (decision === 'cancelled') {
+      const today = new Date().toISOString().slice(0,10);
+      if (item.status !== 'approved' || item.end_date < today) return accessPage('Cannot cancel leave', 'Managers can cancel approved current or future leave for employees in their managed teams.', 400);
+      await db.prepare("UPDATE leave_requests SET status='cancelled',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status='approved'").bind(user.id,notes||'Cancelled by Manager',id).run();
+      await createNotification(db,item.employee_id,'leave_cancelled_manager',`Annual leave cancelled by ${user.display_name}`,`${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}${notes?` · ${notes}`:''}`,'/leave');
+      return redirect(request,'/leave-requests');
+    }
+    if (item.status !== 'pending') return redirect(request, `/leave-requests/${id}`);
     if (!['approved','rejected'].includes(decision)) return accessPage('Invalid decision', 'Choose Approve or Reject.', 400);
     await db.prepare('UPDATE leave_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status=\'pending\'').bind(decision,user.id,notes,id).run();
     const verb = decision === 'approved' ? 'approved' : 'rejected';
@@ -400,7 +407,8 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const requestCost = rotaDays.reduce((sum,d)=>sum+(d.working?(d.portion==='FULL'?1:0.5):0),0);
   const projected = balance ? balance.remaining - requestCost : null;
   const approvalWarning = item.status==='pending' && balance && projected < 0 ? `<div class="notice section-gap"><strong>⚠ Approval would create a negative balance</strong><br>This request uses ${requestCost.toFixed(1)} days. Current remaining balance is ${balance.remaining.toFixed(1)} days; after approval it would be ${projected.toFixed(1)} days. Approval is still permitted.</div>` : '';
-  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>`;
+  const today = new Date().toISOString().slice(0,10);
+  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'&&item.end_date>=today?`<div class="form-card section-gap"><h2>Manager Actions</h2><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
   const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
