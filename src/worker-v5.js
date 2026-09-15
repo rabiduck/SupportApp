@@ -281,6 +281,13 @@ async function wfhRequestPage(request,db,user){
   if(employee!==user.display_name)return errorPage('WFH requests can only be submitted from your own rota row.',user,403);
   const existing=await row(db,"SELECT id,status FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved')",user.id,date);
   if(existing)return errorPage(`A WFH request already exists for ${date} (${existing.status}).`,user,400);
+  const leave=await row(db,"SELECT start_date,end_date,start_portion,end_portion FROM leave_requests WHERE employee_id=? AND status='approved' AND start_date<=? AND end_date>=? ORDER BY id DESC LIMIT 1",user.id,date,date);
+  if(leave){
+    let portion='FULL';
+    if(date===leave.start_date)portion=leave.start_portion||'FULL';
+    if(date===leave.end_date)portion=leave.end_portion||'FULL';
+    if(portion==='FULL')return errorPage('WFH cannot be requested on a full day of annual leave.',user,400);
+  }
   if(request.method.toUpperCase()==='POST'){
     const form=await request.formData(),notes=String(form.get('employee_notes')||'').trim()||null,managerRecord=user.isManager;
     const made=await db.prepare("INSERT INTO wfh_requests(employee_id,request_date,status,employee_notes,reviewed_by,reviewed_at,manager_notes,entry_mode) VALUES(?,?,?,?,?,?,?,?)").bind(user.id,date,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
