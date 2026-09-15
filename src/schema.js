@@ -138,6 +138,12 @@ const V14_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='14' WHERE key='schema_version'"
 ];
 
+const V15_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS wfh_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, request_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', employee_notes TEXT, requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_by INTEGER, reviewed_at TEXT, manager_notes TEXT, entry_mode TEXT NOT NULL DEFAULT 'REQUEST', FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(reviewed_by) REFERENCES employees(id))",
+  "CREATE INDEX IF NOT EXISTS idx_wfh_employee_date ON wfh_requests(employee_id,request_date,status)",
+  "UPDATE app_meta SET value='15' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -171,5 +177,6 @@ export async function ensureSchema(db) {
   if (version < 11) { await applyStatements(db, V11_SCHEMA_STATEMENTS, true); version = 11; }
   if (version < 12) { await applyStatements(db, V12_SCHEMA_STATEMENTS); version = 12; }
   if (version < 13) { await applyStatements(db, V13_SCHEMA_STATEMENTS, true); version = 13; }
-  if (version < 14) { await applyStatements(db, V14_SCHEMA_STATEMENTS); }
+  if (version < 14) { await applyStatements(db, V14_SCHEMA_STATEMENTS); version = 14; }
+  if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); }
 }
