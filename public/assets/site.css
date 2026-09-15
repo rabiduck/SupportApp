@@ -170,3 +170,12 @@ code { font-family: Consolas, "Courier New", monospace; }
     .page { padding: 18px; }
     .top-bar { padding: 0 16px; }
 }
+
+.app-modal { width:min(680px,calc(100vw - 32px)); max-height:88vh; padding:0; border:0; border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.28); color:var(--ink); }
+.app-modal::backdrop { background:rgba(15,35,45,.48); backdrop-filter:blur(2px); }
+.modal-head { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px; border-bottom:1px solid var(--line); background:var(--soft); }
+.modal-head h2 { margin:0; }
+.modal-close { width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:var(--muted); font-size:1.55rem; line-height:1; }
+.modal-close:hover { background:rgba(0,0,0,.06); }
+.modal-body { padding:22px; overflow:auto; }
+.app-modal form { margin:0; }
