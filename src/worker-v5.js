@@ -114,7 +114,7 @@ async function enrichUser(db, employee) {
 
 function nav(user, active = '') {
   const links = user.isSystemAdmin
-    ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Leave Requests','/leave-requests'],['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
+    ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],...(user.isManager ? [['Leave Requests','/leave-requests']] : []),['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
     : user.isManager
       ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Leave Requests','/leave-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']]
       : [['Rota','/rota'],['My Leave','/leave']];
@@ -238,8 +238,8 @@ async function myLeavePage(request, db, user) {
 }
 
 async function leaveRequestsPage(request, db, user) {
-  const scopeSql = user.isSystemAdmin ? '' : ` AND e.team_id IN (${user.managedTeamIds.map(() => '?').join(',') || 'NULL'})`;
-  const scopeParams = user.isSystemAdmin ? [] : user.managedTeamIds;
+  const scopeSql = ` AND e.team_id IN (${user.managedTeamIds.map(() => '?').join(',') || 'NULL'})`;
+  const scopeParams = user.managedTeamIds;
   const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scopeSql} ORDER BY CASE lr.status WHEN 'pending' THEN 0 ELSE 1 END,lr.start_date,lr.requested_at`, ...scopeParams);
   const table = requests.length ? `<table><thead><tr><th>Employee</th><th>Team</th><th>Dates</th><th>Status</th><th>Employee Note</th><th></th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.start_date)}${r.end_date !== r.start_date ? ` → ${h(r.end_date)}` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td><a class="button secondary" href="/leave-requests/${r.id}">${r.status === 'pending' ? 'Review' : 'View'}</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">There are no leave requests in your management scope.</div>';
   return appPage('Leave Requests', 'Review annual leave requests for employees in your managed teams.', `<div class="table-card">${table}</div>`, user, 'Leave Requests', db);
@@ -248,7 +248,7 @@ async function leaveRequestsPage(request, db, user) {
 async function leaveRequestReviewPage(request, db, user, id) {
   const item = await row(db, `SELECT lr.*,e.display_name,e.team_id,t.name AS team_name,COALESCE(e.override_rota_pattern_id,t.default_rota_pattern_id) AS pattern_id,COALESCE(e.override_pattern_start_date,t.default_pattern_start_date) AS pattern_start_date,COALESCE(orp.cycle_length_weeks,trp.cycle_length_weeks,1) AS cycle_length_weeks,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN rota_patterns orp ON orp.id=e.override_rota_pattern_id LEFT JOIN rota_patterns trp ON trp.id=t.default_rota_pattern_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.id=?`, id);
   if (!item) return accessPage('Leave request not found', 'The requested leave request does not exist.', 404);
-  if (!user.isSystemAdmin && !user.managedTeamIds.includes(Number(item.team_id))) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
+  if (!user.managedTeamIds.includes(Number(item.team_id))) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
 
   if (request.method.toUpperCase() === 'POST') {
     if (item.status !== 'pending') return redirect(request, `/leave-requests/${id}`);
@@ -311,8 +311,8 @@ export default {
 
       if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
 
-      if ((user.isManager || user.isSystemAdmin) && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
-      if ((user.isManager || user.isSystemAdmin) && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
+      if (user.isManager && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
+      if (user.isManager && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
 
       const requestForApp = withIdentityHeader(request, user.email || identity.email || null);
       if (!user.isManager && !user.isSystemAdmin) {
