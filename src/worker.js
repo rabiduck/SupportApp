@@ -44,7 +44,8 @@ async function calendarRota(request, db) {
   const url = new URL(request.url);
   const teams = await rows(db, 'SELECT id,name FROM teams WHERE is_active=1 ORDER BY name');
   const selectedTeam = Number(url.searchParams.get('team')) || null;
-  const requested = url.searchParams.get('week');
+  const requestedMonth = url.searchParams.get('month');
+  const requested = requestedMonth && /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth + '-01' : url.searchParams.get('week');
   const base = requested && /^\d{4}-\d{2}-\d{2}$/.test(requested) ? new Date(`${requested}T00:00:00Z`) : new Date();
   const weekStart = mondayOf(base);
   const dates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -121,7 +122,7 @@ async function calendarRota(request, db) {
   const content = `<div class="page-header"><div><div class="page-title">Rota</div><div class="page-description">Calendar week view by employee.</div></div></div>
   <div class="rota-toolbar">
     <form method="get" action="/rota" class="rota-filter"><label>Team<select name="team" onchange="this.form.submit()">${teamOptions}</select></label><input type="hidden" name="week" value="${isoDate(weekStart)}"></form>
-    <div class="week-nav"><a class="button secondary" href="/rota?week=${previous}${teamParam}">‹ Previous</a><a class="button" href="/rota?week=${todayWeek}${teamParam}">Today</a><a class="button secondary" href="/rota?week=${next}${teamParam}">Next ›</a></div>
+    <div class="week-nav"><a class="button secondary" href="/rota?week=${previous}${teamParam}">‹ Previous</a><a class="button" href="/rota?week=${todayWeek}${teamParam}">Today</a><a class="button secondary" href="/rota?week=${next}${teamParam}">Next ›</a><form method="get" action="/rota" style="display:inline-flex;gap:6px;align-items:end;margin-left:12px"><label>Jump to month<input type="month" name="month" value="${isoDate(weekStart).slice(0,7)}"></label>${selectedTeam?`<input type="hidden" name="team" value="${selectedTeam}">`:''}<button type="submit" class="secondary">Go</button></form></div>
     <div class="week-range"><strong>${h(formatRange(weekStart))}</strong></div>
   </div>
   ${table}
