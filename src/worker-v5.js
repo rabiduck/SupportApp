@@ -114,17 +114,29 @@ async function enrichUser(db, employee) {
 }
 
 function nav(user, active = '') {
-  const operational = [['Rota','/rota'],['On Call','/on-call'],['Gatekeepers','/gatekeepers'],['My Leave','/leave']];
-  const management = (user.isManager || user.isTeamLeader) ? [['Leave Requests','/leave-requests'],['WFH Requests','/wfh-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']] : [];
-  const links = user.isSystemAdmin
-    ? [['Dashboard','/'],...operational,...management,['Teams','/teams'],['Administration','/administration']]
-    : user.isManager
-      ? [['Dashboard','/'],...operational,...management]
-      : user.isTeamLeader
-        ? [...operational,...management]
-        : operational;
-  return links.map(([name, href]) => `<a class="${active === name ? 'active' : ''}" href="${href}">${name}</a>`).join('');
+  const isAdmin = user.isManager || user.isTeamLeader || user.isSystemAdmin;
+  const sections = [
+    {name:'Rota', items:[
+      ['Calendar','/rota','Rota'],
+      ['My Requests','/leave','My Leave'],
+      ['On Call','/on-call','On Call'],
+      ['Gatekeepers','/gatekeepers','Gatekeepers']
+    ]},
+    ...(isAdmin ? [{name:'Administration', items:[
+      ['Leave Requests','/leave-requests','Leave Requests'],
+      ['WFH Requests','/wfh-requests','WFH Requests'],
+      ['Employees','/employees','Employees'],
+      ['Shift Patterns','/shift-patterns','Shift Patterns'],
+      ...(user.isSystemAdmin ? [['Teams','/teams','Teams'],['System Administration','/administration','Administration']] : [])
+    ]}] : [])
+  ];
+  const dashboard = (user.isManager || user.isSystemAdmin) ? `<a class="nav-top ${active==='Dashboard'?'active':''}" href="/">Dashboard</a>` : '';
+  return dashboard + sections.map((section,si)=>{
+    const open=section.items.some(([, ,key])=>key===active);
+    return `<div class="nav-group"><button type="button" class="nav-group-toggle" data-nav-group="${si}" aria-expanded="${open?'true':'false'}"><span>${section.name}</span><span class="nav-chevron">›</span></button><div class="nav-children" data-nav-children="${si}" ${open?'':'hidden'}>${section.items.map(([label,href,key])=>`<a class="${active===key?'active':''}" href="${href}">${label}</a>`).join('')}</div></div>`;
+  }).join('');
 }
+function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-group-toggle').forEach(b=>{const id=b.dataset.navGroup,c=document.querySelector('[data-nav-children="'+id+'"]'),key='supportapp.nav.'+b.querySelector('span').textContent;const current=b.getAttribute('aria-expanded')==='true';if(!current&&localStorage.getItem(key)==='open'){c.hidden=false;b.setAttribute('aria-expanded','true')}b.addEventListener('click',()=>{const open=b.getAttribute('aria-expanded')==='true';b.setAttribute('aria-expanded',String(!open));c.hidden=open;localStorage.setItem(key,open?'closed':'open')})})})()</script>`;}
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
@@ -159,7 +171,7 @@ async function decorateResponse(response, user, path, localAuth = false, db = nu
   // Most application pages are rendered by the older workers and then decorated here,
   // so inject the live mailbox polling script during decoration as well.
   if (!text.includes('/api/notifications/unread-count')) {
-    text = text.replace('</body>', `${notificationPollScript()}</body>`);
+    text = text.replace('</body>', `${notificationPollScript()}${navTreeScript()}</body>`);
   }
   return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
