@@ -216,6 +216,62 @@ async function notificationOpen(request, db, user, id) {
   return redirect(request, n.target_url || '/notifications');
 }
 
+async function employeeRotaContext(db, employeeId) {
+  return row(db, `SELECT e.id,e.team_id,COALESCE(e.override_rota_pattern_id,t.default_rota_pattern_id) AS pattern_id,
+    COALESCE(e.override_pattern_start_date,t.default_pattern_start_date) AS pattern_start_date,
+    COALESCE(orp.cycle_length_weeks,trp.cycle_length_weeks,1) AS cycle_length_weeks
+    FROM employees e JOIN teams t ON t.id=e.team_id
+    LEFT JOIN rota_patterns orp ON orp.id=e.override_rota_pattern_id
+    LEFT JOIN rota_patterns trp ON trp.id=t.default_rota_pattern_id WHERE e.id=?`, employeeId);
+}
+async function rotaAssignments(db, patternId) {
+  return patternId ? rows(db, `SELECT rpw.week_number,wpd.day_of_week,st.is_working_day FROM rota_pattern_weeks rpw
+    JOIN week_pattern_days wpd ON wpd.week_pattern_id=rpw.week_pattern_id JOIN shift_types st ON st.id=wpd.shift_type_id
+    WHERE rpw.rota_pattern_id=?`, patternId) : [];
+}
+function cycleWeekOn(date, ctx) {
+  if (!ctx.pattern_start_date || Number(ctx.cycle_length_weeks)<=0) return 1;
+  const ps=new Date(`${ctx.pattern_start_date}T00:00:00Z`);
+  const dw=Math.floor((date-ps)/(7*86400000)), n=Number(ctx.cycle_length_weeks);
+  return ((dw%n)+n)%n+1;
+}
+function requestDays(request, ctx, amap, clipStart=null, clipEnd=null) {
+  const start=new Date(`${request.start_date}T00:00:00Z`), end=new Date(`${request.end_date}T00:00:00Z`);
+  let total=0;
+  for(let d=new Date(start);d<=end;d.setUTCDate(d.getUTCDate()+1)){
+    const day=d.toISOString().slice(0,10); if(clipStart&&day<clipStart)continue;if(clipEnd&&day>clipEnd)continue;
+    const dow=(d.getUTCDay()+6)%7, shift=amap.get(`${cycleWeekOn(d,ctx)}:${dow}`);
+    if(!shift?.is_working_day) continue;
+    let portion='FULL'; if(day===request.start_date)portion=request.start_portion||'FULL'; if(day===request.end_date)portion=request.end_portion||'FULL';
+    total += portion==='FULL' ? 1 : 0.5;
+  }
+  return total;
+}
+async function leaveBalance(db, employeeId, asOf=new Date().toISOString().slice(0,10)) {
+  const annual=await row(db,"SELECT id FROM leave_types WHERE code='ANNUAL'"); if(!annual)return null;
+  const year=await row(db,'SELECT id,name,start_date,end_date FROM leave_years WHERE is_active=1 AND start_date<=? AND end_date>=? ORDER BY start_date DESC LIMIT 1',asOf,asOf);
+  if(!year)return null;
+  const ent=await row(db,'SELECT entitlement_days,adjustment_days FROM employee_leave_entitlements WHERE employee_id=? AND leave_year_id=? AND leave_type_id=?',employeeId,year.id,annual.id);
+  const ctx=await employeeRotaContext(db,employeeId); if(!ctx)return null;
+  const assignments=await rotaAssignments(db,ctx.pattern_id), amap=new Map(assignments.map(a=>[`${a.week_number}:${a.day_of_week}`,a]));
+  const reqs=await rows(db,'SELECT start_date,end_date,start_portion,end_portion,status FROM leave_requests WHERE employee_id=? AND leave_type_id=? AND end_date>=? AND start_date<=? AND status IN (\'approved\',\'pending\')',employeeId,annual.id,year.start_date,year.end_date);
+  let taken=0,booked=0,pending=0;
+  for(const r of reqs){
+    if(r.status==='pending'){pending+=requestDays(r,ctx,amap,year.start_date,year.end_date);continue;}
+    const before=new Date(asOf+'T00:00:00Z'); before.setUTCDate(before.getUTCDate()-1); const beforeIso=before.toISOString().slice(0,10);
+    taken+=requestDays(r,ctx,amap,year.start_date,beforeIso);
+    booked+=requestDays(r,ctx,amap,asOf,year.end_date);
+  }
+  const entitlement=Number(ent?.entitlement_days||0), adjustment=Number(ent?.adjustment_days||0);
+  return {year,entitlement,adjustment,taken,booked,pending,remaining:entitlement+adjustment-taken-booked};
+}
+function balanceCard(b) {
+  if(!b)return '<div class="notice"><strong>No active leave year configured.</strong></div>';
+  const n=v=>Number(v||0).toFixed(1);
+  const warning=b.remaining<0?`<div class="notice section-gap"><strong>⚠ Negative leave balance: ${n(b.remaining)} days</strong><br>Approved leave exceeds the current entitlement. This is advisory and does not prevent further requests or approvals.</div>`:'';
+  return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
+}
+
 async function myLeavePage(request, db, user) {
   const method = request.method.toUpperCase();
   let message = '';
@@ -244,11 +300,12 @@ async function myLeavePage(request, db, user) {
     }
   }
 
+  const balance = await leaveBalance(db, user.id);
   const requests = await rows(db, `SELECT lr.*, reviewer.display_name AS reviewer_name FROM leave_requests lr LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.employee_id=? ORDER BY lr.requested_at DESC,lr.id DESC`, user.id);
   const portionLabel = p => p === 'AM' ? 'AM' : p === 'PM' ? 'PM' : 'Full Day';
   const requestDates = r => r.start_date === r.end_date ? `${h(r.start_date)} <span class="muted">(${portionLabel(r.start_portion)})</span>` : `${h(r.start_date)} <span class="muted">(${portionLabel(r.start_portion)})</span> → ${h(r.end_date)} <span class="muted">(${portionLabel(r.end_portion)})</span>`;
   const table = requests.length ? `<table><thead><tr><th>Dates</th><th>Status</th><th>Notes</th><th>Requested</th><th>Reviewed By</th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${requestDates(r)}</strong></td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td>${h(String(r.requested_at || '').slice(0,16).replace('T',' '))}</td><td>${h(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">You have not submitted any annual leave requests yet.</div>';
-  const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>Start Portion<select name="start_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>End Date<input name="end_date" type="date" required></label><label>End Portion<select name="end_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
+  const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}${balanceCard(balance)}<div class="form-card section-gap"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>Start Portion<select name="start_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>End Date<input name="end_date" type="date" required></label><label>End Portion<select name="end_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
   return appPage('My Leave', 'Request annual leave and track the status of your requests.', content, user, 'My Leave', db);
 }
 
@@ -291,8 +348,12 @@ async function leaveRequestReviewPage(request, db, user, id) {
     rotaDays.push({date:day,shift:shift?.code||'OFF',working:Boolean(shift?.is_working_day),portion});
   }
   const rotaTable = `<table><thead><tr><th>Date</th><th>Scheduled Shift</th><th>Leave Impact</th></tr></thead><tbody>${rotaDays.map((d)=>`<tr><td>${h(d.date)}</td><td>${h(d.shift)}</td><td>${d.working?`Working day → ${d.portion==='FULL'?'Full Day':d.portion+' Half Day'} Leave`:'Non-working day'}</td></tr>`).join('')}</tbody></table>`;
+  const balance = await leaveBalance(db,item.employee_id);
+  const requestCost = rotaDays.reduce((sum,d)=>sum+(d.working?(d.portion==='FULL'?1:0.5):0),0);
+  const projected = balance ? balance.remaining - requestCost : null;
+  const approvalWarning = item.status==='pending' && balance && projected < 0 ? `<div class="notice section-gap"><strong>⚠ Approval would create a negative balance</strong><br>This request uses ${requestCost.toFixed(1)} days. Current remaining balance is ${balance.remaining.toFixed(1)} days; after approval it would be ${projected.toFixed(1)} days. Approval is still permitted.</div>` : '';
   const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>`;
-  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div><div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
+  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
 
