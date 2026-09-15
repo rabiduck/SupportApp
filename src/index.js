@@ -320,11 +320,6 @@ async function shiftPatternsPage(db) {
   const shiftTable = `<table><thead><tr><th>Shift</th><th>Code</th><th>Start</th><th>End</th><th>Working Day</th><th></th></tr></thead><tbody>${shifts.map((s) => `<tr><td>${h(s.name)}</td><td>${h(s.code)}</td><td>${h(s.start_time || '—')}</td><td>${h(s.end_time || '—')}</td><td>${s.is_working_day ? 'Yes' : 'No'}</td><td><div class="action-bar"><a class="button secondary" href="/shift-types/${s.id}/edit">Edit</a><form method="post" action="/shift-types/${s.id}/delete" onsubmit="return confirm('Remove this shift type?')"><button type="submit" class="secondary">Remove</button></form></div></td></tr>`).join('')}</tbody></table>`;
   const weekTable = `<table><thead><tr><th>Week Pattern</th>${DAY_NAMES.map((d) => `<th>${d.slice(0,3)}</th>`).join('')}<th></th></tr></thead><tbody>${weekPatterns.map((p) => { const days=daysByWeek.get(p.id)||[]; return `<tr><td><strong>${h(p.name)}</strong><br><span class="muted">${h(p.description || '')}</span></td>${DAY_NAMES.map((_,i)=>`<td>${h(days[i] || '—')}</td>`).join('')}<td><a class="button secondary" href="/week-patterns/${p.id}/edit">Edit</a></td></tr>`; }).join('')}</tbody></table>`;
   const rotaTable = `<table><thead><tr><th>Rota Pattern</th><th>Cycle</th><th>Weeks</th><th>Status</th><th></th></tr></thead><tbody>${rotaPatterns.map((p)=>`<tr><td><strong>${h(p.name)}</strong><br><span class="muted">${h(p.description || '')}</span></td><td>${p.cycle_length_weeks} week${p.cycle_length_weeks===1?'':'s'}</td><td>${h(p.weeks || '—')}</td><td>${statusBadge(p.is_active)}</td><td><a class="button secondary" href="/rota-patterns/${p.id}/edit">Edit</a></td></tr>`).join('')}</tbody></table>`;
-  const shiftChoices = shifts.map((s)=>({id:s.id,name:`${s.name}${s.start_time?` (${s.start_time}–${s.end_time})`:''}`}));
-  const weekChoices = weekPatterns.map((w)=>({id:w.id,name:w.name}));
-  const dayFields = DAY_NAMES.map((day,i)=>`<label>${day}<select name="day_${i}" required>${options(shiftChoices)}</select></label>`).join('');
-  const rotaWeekFields = Array.from({length:MAX_CYCLE_WEEKS},(_,i)=>`<label>Week ${i+1}<select name="week_${i+1}">${options(weekChoices,null,true,'— Not used —')}</select></label>`).join('');
-
   const content = `${pageHeader('Shift Patterns', 'Build reusable weeks, then combine those weeks into repeating rota cycles.')}
     <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>Shift Types</h2><a class="button" href="/shift-types/new">Add Shift Type</a></div>${shiftTable}</div>
     <div class="card section-gap"><h2>Week Patterns</h2>${weekTable}</div>
@@ -338,6 +333,20 @@ async function shiftPatternsPage(db) {
       ${rotaWeekFields}<div class="notice">Only the first number of weeks selected by Cycle Length are used.</div>
       <div class="action-bar"><button type="submit">Create Rota Pattern</button></div></form></div>`;
   return htmlResponse('Shift Patterns', content, 'Shift Patterns');
+}
+
+async function newWeekPatternPage(db){
+ const shifts=await rows(db,'SELECT id,name,start_time,end_time FROM shift_types WHERE is_active=1 ORDER BY is_working_day,start_time,name');
+ const choices=shifts.map(s=>({id:s.id,name:`${s.name}${s.start_time?` (${s.start_time}–${s.end_time})`:''}`}));
+ const fields=DAY_NAMES.map((day,i)=>`<label>${day}<select name="day_${i}" required>${options(choices)}</select></label>`).join('');
+ const content=`${pageHeader('Add Week Pattern','Create a reusable working week from your shift types.')}<div class="form-card"><form method="post" action="/week-patterns"><label>Week Name<input name="name" required maxlength="100"></label><label>Description<textarea name="description" rows="2" maxlength="255"></textarea></label><div class="pattern-days">${fields}</div><div class="action-bar"><button type="submit">Add Week Pattern</button><a class="button secondary" href="/shift-patterns">Cancel</a></div></form></div>`;
+ return htmlResponse('Add Week Pattern',content,'Shift Patterns');
+}
+async function newRotaPatternPage(db){
+ const weeks=await rows(db,'SELECT id,name FROM week_patterns WHERE is_active=1 ORDER BY name'),choices=weeks.map(w=>({id:w.id,name:w.name}));
+ const fields=Array.from({length:MAX_CYCLE_WEEKS},(_,i)=>`<label>Week ${i+1}<select name="week_${i+1}">${options(choices,null,true,'— Not used —')}</select></label>`).join('');
+ const content=`${pageHeader('Add Rota Pattern','Combine week patterns into a repeating rota cycle.')}<div class="form-card"><form method="post" action="/rota-patterns"><label>Pattern Name<input name="name" required maxlength="100"></label><label>Description<textarea name="description" rows="2" maxlength="255"></textarea></label><label>Cycle Length<select name="cycle_length_weeks" required>${Array.from({length:MAX_CYCLE_WEEKS},(_,i)=>`<option value="${i+1}">${i+1} week${i?'s':''}</option>`).join('')}</select></label>${fields}<div class="notice">Only the first number of weeks selected by Cycle Length are used.</div><div class="action-bar"><button type="submit">Add Rota Pattern</button><a class="button secondary" href="/shift-patterns">Cancel</a></div></form></div>`;
+ return htmlResponse('Add Rota Pattern',content,'Shift Patterns');
 }
 
 async function createWeekPattern(request, db) {
@@ -463,6 +472,8 @@ export default {
       if (method==='POST' && path==='/rota-patterns') return createRotaPattern(request,env.DB);
       if (method==='GET' && /^\/rota-patterns\/\d+\/edit$/.test(path)) return editRotaPatternPage(env.DB,Number(path.split('/')[2]));
       if (method==='POST' && /^\/rota-patterns\/\d+\/edit$/.test(path)) return updateRotaPattern(request,env.DB,Number(path.split('/')[2]));
+      if (method==='GET' && path==='/week-patterns/new') return newWeekPatternPage(env.DB);
+      if (method==='GET' && path==='/rota-patterns/new') return newRotaPatternPage(env.DB);
       if (method==='GET' && path==='/shift-types/new') return newShiftTypePage();
       if (method==='POST' && path==='/shift-types/new') return createShiftType(request,env.DB);
       if (method==='POST' && /^\/shift-types\/\d+\/delete$/.test(path)) return deleteShiftType(request,env.DB,Number(path.split('/')[2]));
