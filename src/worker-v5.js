@@ -114,7 +114,7 @@ async function enrichUser(db, employee) {
 }
 
 function nav(user, active = '') {
-  const operational = [['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave']];
+  const operational = [['Rota','/rota'],['On Call','/on-call'],['Gatekeepers','/gatekeepers'],['My Leave','/leave']];
   const management = (user.isManager || user.isTeamLeader) ? [['Leave Requests','/leave-requests'],['WFH Requests','/wfh-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']] : [];
   const links = user.isSystemAdmin
     ? [['Dashboard','/'],...operational,...management,['Teams','/teams'],['Administration','/administration']]
@@ -129,6 +129,7 @@ function nav(user, active = '') {
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
   if (path.startsWith('/on-call')) return 'On Call';
+  if (path.startsWith('/gatekeeper')) return 'Gatekeepers';
   if (path.startsWith('/rota')) return 'Rota';
   if (path.startsWith('/leave-requests')) return 'Leave Requests';
   if (path.startsWith('/wfh-requests')) return 'WFH Requests';
@@ -280,6 +281,27 @@ function balanceCard(b) {
   const n=v=>Number(v||0).toFixed(1);
   const warning=b.remaining<0?`<div class="notice section-gap"><strong>⚠ Negative leave balance: ${n(b.remaining)} days</strong><br>Approved leave exceeds the current entitlement. This is advisory and does not prevent further requests or approvals.</div>`:'';
   return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
+}
+
+function mondayText(dateText){const d=new Date(dateText+'T12:00:00Z'),x=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-x);return d.toISOString().slice(0,10);}
+async function gatekeeperMembers(db,teamId){return rows(db,'SELECT id,display_name,team_id,COALESCE(gatekeeper_order,999999) gatekeeper_order FROM employees WHERE team_id=? AND is_active=1 ORDER BY gatekeeper_order,display_name,id',teamId);}
+async function gatekeeperEffectiveFor(db,teamId,dateText){
+ const team=await row(db,'SELECT gatekeeper_enabled FROM teams WHERE id=? AND is_active=1',teamId);if(!team?.gatekeeper_enabled)return null;
+ const ov=await row(db,'SELECT o.*,e.display_name FROM gatekeeper_overrides o JOIN employees e ON e.id=o.employee_id WHERE o.team_id=? AND o.is_active=1 AND o.start_date<=? AND o.end_date>=? ORDER BY o.id DESC LIMIT 1',teamId,dateText,dateText);if(ov)return {employee_id:ov.employee_id,display_name:ov.display_name,source:ov.source};
+ const members=await gatekeeperMembers(db,teamId),settings=await row(db,'SELECT * FROM gatekeeper_settings WHERE team_id=?',teamId);if(!members.length||!settings?.anchor_monday)return null;
+ const mon=mondayText(dateText),weeks=Math.floor((new Date(mon+'T12:00:00Z')-new Date(settings.anchor_monday+'T12:00:00Z'))/604800000),a=Math.max(0,members.findIndex(m=>Number(m.id)===Number(settings.anchor_employee_id))),idx=((a+weeks)%members.length+members.length)%members.length;return {employee_id:members[idx].id,display_name:members[idx].display_name,source:'rotation'};
+}
+async function gatekeepersPage(request,db,user){
+ const teams=await rows(db,'SELECT id,name,gatekeeper_enabled FROM teams WHERE is_active=1 ORDER BY name');let cards='';
+ for(const t of teams){if(!t.gatekeeper_enabled){cards+=`<div class="card section-gap"><h2>${h(t.name)}</h2><p class="muted">Gatekeeper rotation disabled.</p></div>`;continue;}const members=await gatekeeperMembers(db,t.id),set=await row(db,'SELECT * FROM gatekeeper_settings WHERE team_id=?',t.id),eff=await gatekeeperEffectiveFor(db,t.id,mondayText(new Date().toISOString().slice(0,10)));
+ cards+=`<div class="card section-gap"><h2>${h(t.name)}</h2><p><strong>This week:</strong> ${eff?h(eff.display_name):'<span class="muted">Not configured</span>'}</p><p><strong>Rotation:</strong> ${members.map(m=>h(m.display_name)).join(' → ')||'<span class="muted">No active employees</span>'}</p>${(user.isManager||user.isTeamLeader)?`<form method="post" action="/gatekeepers/${t.id}/anchor"><label>Anchor Monday<input type="date" name="anchor_monday" value="${h(set?.anchor_monday||mondayText(new Date().toISOString().slice(0,10)))}" required></label><label>Anchor Employee<select name="anchor_employee_id">${members.map(m=>`<option value="${m.id}" ${Number(m.id)===Number(set?.anchor_employee_id)?'selected':''}>${h(m.display_name)}</option>`).join('')}</select></label><button>Save Rotation Anchor</button></form>`:''}</div>`;}
+ return appPage('Gatekeepers','Monday–Friday gatekeeper rotation by team.',cards,user,'Gatekeepers',db);
+}
+async function gatekeeperAnchor(request,db,user,teamId){if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const f=await request.formData();await db.prepare('INSERT INTO gatekeeper_settings(team_id,anchor_monday,anchor_employee_id) VALUES(?,?,?) ON CONFLICT(team_id) DO UPDATE SET anchor_monday=excluded.anchor_monday,anchor_employee_id=excluded.anchor_employee_id').bind(teamId,String(f.get('anchor_monday')),Number(f.get('anchor_employee_id'))).run();return redirect(request,'/gatekeepers');}
+async function gatekeeperOverridePage(request,db,user){
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const url=new URL(request.url),teamId=Number(url.searchParams.get('team')),date=String(url.searchParams.get('date')||''),scope=String(url.searchParams.get('scope')||'day'),members=await gatekeeperMembers(db,teamId),start=scope==='week'?mondayText(date):date,end=scope==='week'?(()=>{const d=new Date(start+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+4);return d.toISOString().slice(0,10)})():date;
+ if(request.method.toUpperCase()==='POST'){const f=await request.formData(),eid=Number(f.get('employee_id')),notes=String(f.get('notes')||'').trim()||null;await db.prepare("INSERT INTO gatekeeper_overrides(team_id,start_date,end_date,employee_id,source,notes,recorded_by) VALUES(?,?,?,?,'manager',?,?)").bind(teamId,start,end,eid,notes,user.id).run();await createNotification(db,eid,'gatekeeper_override',`Gatekeeper assigned by ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,'/gatekeepers');return redirect(request,'/gatekeepers');}
+ return appPage('Override Gatekeeper',scope==='week'?'Override Monday–Friday.':'Override one day.',`<div class="form-card"><form method="post"><label>Employee<select name="employee_id">${members.map(m=>`<option value="${m.id}">${h(m.display_name)}</option>`).join('')}</select></label><label>Notes<textarea name="notes"></textarea></label><button>Apply Override</button></form></div>`,user,'Gatekeepers',db);
 }
 
 function fridayFor(dateText){const d=new Date(dateText+'T12:00:00Z'),day=d.getUTCDay(),delta=(day-5+7)%7;d.setUTCDate(d.getUTCDate()-delta);return d.toISOString().slice(0,10);}
@@ -738,6 +760,9 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path==='/gatekeepers' && request.method.toUpperCase()==='GET') return gatekeepersPage(request,env.DB,user);
+      if (/^\/gatekeepers\/\d+\/anchor$/.test(path) && request.method.toUpperCase()==='POST') return gatekeeperAnchor(request,env.DB,user,Number(path.split('/')[2]));
+      if (path==='/gatekeeper/override' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return gatekeeperOverridePage(request,env.DB,user);
       if (path==='/on-call/cover' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return onCallCoverPage(request,env.DB,user);
       if (/^\/on-call\/cover\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return onCallCoverReview(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/on-call' && request.method.toUpperCase()==='GET') return onCallPage(request,env.DB,user);
