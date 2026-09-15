@@ -322,16 +322,8 @@ async function shiftPatternsPage(db) {
   const rotaTable = `<table><thead><tr><th>Rota Pattern</th><th>Cycle</th><th>Weeks</th><th>Status</th><th></th></tr></thead><tbody>${rotaPatterns.map((p)=>`<tr><td><strong>${h(p.name)}</strong><br><span class="muted">${h(p.description || '')}</span></td><td>${p.cycle_length_weeks} week${p.cycle_length_weeks===1?'':'s'}</td><td>${h(p.weeks || '—')}</td><td>${statusBadge(p.is_active)}</td><td><a class="button secondary" href="/rota-patterns/${p.id}/edit">Edit</a></td></tr>`).join('')}</tbody></table>`;
   const content = `${pageHeader('Shift Patterns', 'Build reusable weeks, then combine those weeks into repeating rota cycles.')}
     <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>Shift Types</h2><a class="button" href="/shift-types/new">Add Shift Type</a></div>${shiftTable}</div>
-    <div class="card section-gap"><h2>Week Patterns</h2>${weekTable}</div>
-    <div class="form-card section-gap"><h2>Create Week Pattern</h2><form method="post" action="/week-patterns">
-      <label>Week Name<input name="name" required maxlength="100"></label><label>Description<textarea name="description" rows="2" maxlength="255"></textarea></label>
-      <div class="pattern-days">${dayFields}</div><div class="action-bar"><button type="submit">Create Week Pattern</button></div></form></div>
-    <div class="card section-gap"><h2>Rota Patterns</h2>${rotaTable}</div>
-    <div class="form-card section-gap"><h2>Create Rota Pattern</h2><form method="post" action="/rota-patterns">
-      <label>Pattern Name<input name="name" required maxlength="100"></label><label>Description<textarea name="description" rows="2" maxlength="255"></textarea></label>
-      <label>Cycle Length<select name="cycle_length_weeks" required>${Array.from({length:MAX_CYCLE_WEEKS},(_,i)=>`<option value="${i+1}">${i+1} week${i?'s':''}</option>`).join('')}</select></label>
-      ${rotaWeekFields}<div class="notice">Only the first number of weeks selected by Cycle Length are used.</div>
-      <div class="action-bar"><button type="submit">Create Rota Pattern</button></div></form></div>`;
+    <div class="card section-gap"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>Week Patterns</h2><a class="button" href="/week-patterns/new">Add Week Pattern</a></div>${weekTable}</div>
+    <div class="card section-gap"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>Rota Patterns</h2><a class="button" href="/rota-patterns/new">Add Rota Pattern</a></div>${rotaTable}</div>`;
   return htmlResponse('Shift Patterns', content, 'Shift Patterns');
 }
 
