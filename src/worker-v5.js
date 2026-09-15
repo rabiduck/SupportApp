@@ -114,11 +114,15 @@ async function enrichUser(db, employee) {
 }
 
 function nav(user, active = '') {
+  const operational = [['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave']];
+  const management = (user.isManager || user.isTeamLeader) ? [['Leave Requests','/leave-requests'],['WFH Requests','/wfh-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']] : [];
   const links = user.isSystemAdmin
-    ? [['Dashboard','/'],['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave'],...(user.isManager ? [['Leave Requests','/leave-requests']] : []),['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
+    ? [['Dashboard','/'],...operational,...management,['Teams','/teams'],['Administration','/administration']]
     : user.isManager
-      ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Leave Requests','/leave-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']]
-      : [['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave']];
+      ? [['Dashboard','/'],...operational,...management]
+      : user.isTeamLeader
+        ? [...operational,...management]
+        : operational;
   return links.map(([name, href]) => `<a class="${active === name ? 'active' : ''}" href="${href}">${name}</a>`).join('');
 }
 
@@ -127,6 +131,7 @@ function activeForPath(path) {
   if (path.startsWith('/on-call')) return 'On Call';
   if (path.startsWith('/rota')) return 'Rota';
   if (path.startsWith('/leave-requests')) return 'Leave Requests';
+  if (path.startsWith('/wfh-requests')) return 'WFH Requests';
   if (path.startsWith('/leave')) return 'My Leave';
   if (path.startsWith('/teams')) return 'Teams';
   if (path.startsWith('/employees')) return 'Employees';
