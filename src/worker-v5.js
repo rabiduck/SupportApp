@@ -294,6 +294,32 @@ async function recordAttendancePage(request,db,user,kind){
  return appPage(`Record ${kind==='absence'?'Absence':'Sickness'}`,'Manager / Team Leader attendance record.',content,user,'Rota',db);
 }
 
+async function editAttendancePage(request,db,user,kind,id){
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ const table=kind==='absence'?'absences':'sickness';
+ const item=await row(db,`SELECT x.*,e.display_name,e.team_id FROM ${table} x JOIN employees e ON e.id=x.employee_id WHERE x.id=? AND x.is_active=1`,id);
+ if(!item)return errorPage(`${kind==='absence'?'Absence':'Sickness'} record not found.`,user,404);
+ const types=kind==='absence'?await rows(db,'SELECT id,name FROM absence_types WHERE is_active=1 OR id=? ORDER BY name',item.absence_type_id):[];
+ if(request.method.toUpperCase()==='POST'){
+   const form=await request.formData(),action=String(form.get('action')||'save');
+   if(action==='remove'){
+     await db.prepare(`UPDATE ${table} SET is_active=0 WHERE id=?`).bind(id).run();
+     await createNotification(db,item.employee_id,kind+'_removed',`${kind==='absence'?'Absence':'Sickness'} removed by ${user.display_name}`,`${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}`,'/rota');
+     return redirect(request,`/rota?week=${item.start_date}`);
+   }
+   const start=String(form.get('start_date')||''),end=String(form.get('end_date')||''),sp=String(form.get('start_portion')||'FULL'),ep=String(form.get('end_portion')||'FULL'),notes=String(form.get('notes')||'').trim()||null;
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||end<start)return errorPage('Choose a valid date range.',user,400);
+   if(kind==='absence'){const type=Number(form.get('absence_type_id'));await db.prepare('UPDATE absences SET absence_type_id=?,start_date=?,end_date=?,start_portion=?,end_portion=?,notes=? WHERE id=?').bind(type,start,end,sp,ep,notes,id).run();}
+   else await db.prepare('UPDATE sickness SET start_date=?,end_date=?,start_portion=?,end_portion=?,notes=? WHERE id=?').bind(start,end,sp,ep,notes,id).run();
+   await createNotification(db,item.employee_id,kind+'_modified',`${kind==='absence'?'Absence':'Sickness'} updated by ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,'/rota');
+   return redirect(request,`/rota?week=${start}`);
+ }
+ const typeField=kind==='absence'?`<label>Absence Type<select name="absence_type_id" required>${types.map(t=>`<option value="${t.id}" ${Number(t.id)===Number(item.absence_type_id)?'selected':''}>${h(t.name)}</option>`).join('')}</select></label>`:'';
+ const portion=(name,val)=>`<select name="${name}">${['FULL','AM','PM'].map(p=>`<option value="${p}" ${p===val?'selected':''}>${p}</option>`).join('')}</select>`;
+ const content=`<div class="form-card"><h2>Edit ${kind==='absence'?'Absence':'Sickness'} · ${h(item.display_name)}</h2><form method="post">${typeField}<label>Start Date<input type="date" name="start_date" value="${h(item.start_date)}" required></label><label>Start Portion>${portion('start_portion',item.start_portion)}</label><label>End Date<input type="date" name="end_date" value="${h(item.end_date)}" required></label><label>End Portion>${portion('end_portion',item.end_portion)}</label><label>Notes <span class="muted">(optional)</span><textarea name="notes" rows="3">${h(item.notes||'')}</textarea></label><div class="action-bar"><button name="action" value="save">Save Changes</button><button name="action" value="remove" class="secondary" onclick="return confirm('Remove this record?')">Remove</button><a class="button secondary" href="/day?employee=${encodeURIComponent(item.display_name)}&date=${item.start_date}">Cancel</a></div></form></div>`;
+ return appPage(`Edit ${kind==='absence'?'Absence':'Sickness'}`,'Manager / Team Leader attendance record.',content,user,'Rota',db);
+}
+
 async function dayActionsPage(request,db,user){
  const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
@@ -303,12 +329,16 @@ async function dayActionsPage(request,db,user){
  if(!own&&!elevated)return accessPage('Access Denied','You cannot view day actions for another employee.',403);
  const leave=await row(db,"SELECT * FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved') ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END,id DESC LIMIT 1",target.id,date,date);
  const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",target.id,date);
+ const absence=await row(db,"SELECT a.*,t.name type_name FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.employee_id=? AND a.is_active=1 AND a.start_date<=? AND a.end_date>=? ORDER BY a.id DESC LIMIT 1",target.id,date,date);
+ const sickness=await row(db,"SELECT * FROM sickness WHERE employee_id=? AND is_active=1 AND start_date<=? AND end_date>=? ORDER BY id DESC LIMIT 1",target.id,date,date);
  let portion=null;if(leave){portion='FULL';if(date===leave.start_date)portion=leave.start_portion||'FULL';if(date===leave.end_date)portion=leave.end_portion||'FULL';}
  if(!own){
    let info=`<div class="card"><h2>${h(target.display_name)}</h2><p><strong>${h(date)}</strong></p>`;
    if(leave)info+=`<p><strong>Annual Leave:</strong> ${h(portion==='FULL'?'Full Day':portion+' half day')} · ${h(leave.status)}</p>`;
    if(wfh)info+=`<p><strong>WFH:</strong> ${h(wfh.status)}</p>`;
-   if(!leave&&!wfh)info+='<p class="muted">No leave or WFH activity recorded for this day.</p>';
+   if(absence)info+=`<p><strong>Absence:</strong> ${h(absence.type_name)} · ${h(absence.start_date)}${absence.end_date!==absence.start_date?` → ${h(absence.end_date)}`:''} <a href="/absence/${absence.id}/edit">Edit</a></p>`;
+   if(sickness)info+=`<p><strong>Sickness:</strong> ${h(sickness.start_date)}${sickness.end_date!==sickness.start_date?` → ${h(sickness.end_date)}`:''} <a href="/sickness/${sickness.id}/edit">Edit</a></p>`;
+   if(!leave&&!wfh&&!absence&&!sickness)info+='<p class="muted">No leave, WFH, absence or sickness activity recorded for this day.</p>';
    info+='</div>';
    if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Attendance</h2><div class="action-bar"><a class="button" href="/absence/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Absence</a><a class="button secondary" href="/sickness/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Sickness</a></div></div>`;
    if(user.isManager&&user.managedTeamIds.includes(Number(target.team_id))){
@@ -642,6 +672,8 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (/^\/absence\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'absence',Number(path.split('/')[2]));
+      if (/^\/sickness\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'sickness',Number(path.split('/')[2]));
       if (path === '/absence/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return recordAttendancePage(request,env.DB,user,'absence');
       if (path === '/sickness/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return recordAttendancePage(request,env.DB,user,'sickness');
       if (path === '/day' && request.method.toUpperCase()==='GET') return dayActionsPage(request,env.DB,user);
