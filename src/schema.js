@@ -154,6 +154,12 @@ const V16_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='16' WHERE key='schema_version'"
 ];
 
+const V17_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS shift_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, override_date TEXT NOT NULL, shift_type_id INTEGER NOT NULL, notes TEXT, recorded_by INTEGER NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT, is_active INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(shift_type_id) REFERENCES shift_types(id), FOREIGN KEY(recorded_by) REFERENCES employees(id))",
+  "CREATE INDEX IF NOT EXISTS idx_shift_overrides_employee_date ON shift_overrides(employee_id,override_date,is_active)",
+  "UPDATE app_meta SET value='17' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -189,5 +195,6 @@ export async function ensureSchema(db) {
   if (version < 13) { await applyStatements(db, V13_SCHEMA_STATEMENTS, true); version = 13; }
   if (version < 14) { await applyStatements(db, V14_SCHEMA_STATEMENTS); version = 14; }
   if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); version = 15; }
-  if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); }
+  if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); version = 16; }
+  if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); }
 }
