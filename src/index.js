@@ -192,6 +192,7 @@ async function teamsPage(db) {
     <label>Description<textarea name="description" rows="3" maxlength="255"></textarea></label>
     <label>Default Rota Pattern<select name="default_rota_pattern_id">${options(patterns, null, true, 'No Scheduled Hours')}</select></label>
     <label>Pattern Start Date<input name="default_pattern_start_date" type="date"></label>
+    <label class="checkbox-label"><input type="checkbox" name="gatekeeper_enabled" checked> Gatekeeper rotation enabled</label>
     <div class="action-bar"><button type="submit">Create Team</button></div></form></div>`;
   return htmlResponse('Teams', content, 'Teams');
 }
@@ -204,7 +205,7 @@ async function createTeam(request, db) {
   let patternId = Number(form.get('default_rota_pattern_id')) || null;
   const startDate = String(form.get('default_pattern_start_date') || '').trim() || null;
   if (!patternId) patternId = (await row(db, "SELECT id FROM rota_patterns WHERE name='No Scheduled Hours'"))?.id ?? null;
-  await db.prepare('INSERT INTO teams (department_id, name, description, default_rota_pattern_id, default_pattern_start_date) VALUES (?, ?, ?, ?, ?)').bind(departmentId, name, description, patternId, startDate).run();
+  await db.prepare('INSERT INTO teams (department_id, name, description, default_rota_pattern_id, default_pattern_start_date, gatekeeper_enabled) VALUES (?, ?, ?, ?, ?, ?)').bind(departmentId, name, description, patternId, startDate, form.has('gatekeeper_enabled') ? 1 : 0).run();
   return redirect(request, '/teams');
 }
 
@@ -220,6 +221,7 @@ async function editTeamPage(db, id) {
       <label>Description<textarea name="description" rows="3" maxlength="255">${h(team.description || '')}</textarea></label>
       <label>Default Rota Pattern<select name="default_rota_pattern_id" required>${options(patterns, team.default_rota_pattern_id)}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date" value="${h(team.default_pattern_start_date || '')}"></label>
+      <label class="checkbox-label"><input type="checkbox" name="gatekeeper_enabled" ${checked(team.gatekeeper_enabled)}> Gatekeeper rotation enabled</label>
       <label class="checkbox-label"><input type="checkbox" name="is_active" ${checked(team.is_active)}> Active</label>
       <div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/teams">Cancel</a></div>
     </form></div>`;
@@ -234,8 +236,9 @@ async function updateTeam(request, db, id) {
   const patternId = Number(form.get('default_rota_pattern_id')) || null;
   const startDate = String(form.get('default_pattern_start_date') || '').trim() || null;
   const isActive = form.has('is_active') ? 1 : 0;
-  await db.prepare('UPDATE teams SET department_id=?, name=?, description=?, default_rota_pattern_id=?, default_pattern_start_date=?, is_active=? WHERE id=?')
-    .bind(departmentId, name, description, patternId, startDate, isActive, id).run();
+  const gatekeeperEnabled = form.has('gatekeeper_enabled') ? 1 : 0;
+  await db.prepare('UPDATE teams SET department_id=?, name=?, description=?, default_rota_pattern_id=?, default_pattern_start_date=?, gatekeeper_enabled=?, is_active=? WHERE id=?')
+    .bind(departmentId, name, description, patternId, startDate, gatekeeperEnabled, isActive, id).run();
   return redirect(request, '/teams');
 }
 
