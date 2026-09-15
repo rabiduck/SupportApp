@@ -6,6 +6,8 @@ const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
 
+async function row(db, sql, ...params) { return db.prepare(sql).bind(...params).first(); }
+
 async function rows(db, sql, ...params) {
   const result = await db.prepare(sql).bind(...params).all();
   return result.results ?? [];
