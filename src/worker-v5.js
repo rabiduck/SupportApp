@@ -379,6 +379,25 @@ async function changeOwnApprovedLeave(request, db, user, id) {
   return appPage('Modify Annual Leave','Request a change to approved annual leave.',content,user,'My Leave',db);
 }
 
+async function managerEditEmployeeLeave(request,db,user,id){
+  const item=await row(db,`SELECT lr.*,e.display_name,e.team_id FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id WHERE lr.id=?`,id);
+  if(!item)return errorPage('Leave request not found.',user,404);
+  if(!user.managedTeamIds.includes(Number(item.team_id)))return accessPage('Access Denied','This leave record is outside your management scope.',403);
+  if(item.status!=='approved')return errorPage('Only approved leave can be modified through this Manager action.',user,400);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),start=String(form.get('start_date')||''),end=String(form.get('end_date')||''),sp=String(form.get('start_portion')||'FULL').toUpperCase(),ep=String(form.get('end_portion')||'FULL').toUpperCase(),notes=String(form.get('manager_notes')||'').trim()||null;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||end<start||!['FULL','AM','PM'].includes(sp)||!['FULL','AM','PM'].includes(ep))return errorPage('Enter a valid revised leave period.',user,400);
+    const effective=end===start?sp:ep;
+    await db.prepare('UPDATE leave_requests SET start_date=?,end_date=?,start_portion=?,end_portion=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?').bind(start,end,sp,effective,user.id,notes||'Modified by Manager',id).run();
+    await createNotification(db,item.employee_id,'leave_modified_manager',`Annual leave modified by ${user.display_name}`,`${item.start_date} → ${item.end_date} changed to ${start} → ${end}${notes?` · ${notes}`:''}`,'/leave');
+    return redirect(request,`/leave-requests/${id}`);
+  }
+  const opt=(v,label,current)=>`<option value="${v}" ${current===v?'selected':''}>${label}</option>`;
+  const historical=item.end_date<new Date().toISOString().slice(0,10);
+  const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Current record:</strong> ${h(item.start_date)} ${h(item.start_portion||'FULL')} → ${h(item.end_date)} ${h(item.end_portion||'FULL')}</p>${historical?'<div class="notice"><strong>Historical leave</strong><br>This change will retrospectively alter the employee’s leave record and entitlement calculation.</div>':''}</div><div class="form-card section-gap"><h2>Modify Employee Leave</h2><form method="post"><label>Start Date<input type="date" name="start_date" value="${h(item.start_date)}" required></label><label>Start Portion<select name="start_portion">${opt('FULL','Full Day',item.start_portion)}${opt('AM','AM (Half Day)',item.start_portion)}${opt('PM','PM (Half Day)',item.start_portion)}</select></label><label>End Date<input type="date" name="end_date" value="${h(item.end_date)}" required></label><label>End Portion<select name="end_portion">${opt('FULL','Full Day',item.end_portion)}${opt('AM','AM (Half Day)',item.end_portion)}${opt('PM','PM (Half Day)',item.end_portion)}</select></label><label>Reason / Note <span class="muted">(recommended)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Apply Change</button><a class="button secondary" href="/leave-requests/${id}">Cancel</a></div></form></div>`;
+  return appPage('Modify Employee Leave','Managers can directly correct approved leave, including historical records.',content,user,'Leave Requests',db);
+}
+
 async function reviewLeaveChange(request,db,user,id){
   const ch=await row(db,`SELECT lc.*,lr.start_date AS old_start,lr.end_date AS old_end,lr.start_portion AS old_sp,lr.end_portion AS old_ep,e.display_name,e.team_id FROM leave_change_requests lc JOIN leave_requests lr ON lr.id=lc.leave_request_id JOIN employees e ON e.id=lc.employee_id WHERE lc.id=?`,id);
   if(!ch)return errorPage('Leave modification not found.',user,404);
@@ -446,7 +465,7 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const projected = balance ? balance.remaining - requestCost : null;
   const approvalWarning = item.status==='pending' && balance && projected < 0 ? `<div class="notice section-gap"><strong>⚠ Approval would create a negative balance</strong><br>This request uses ${requestCost.toFixed(1)} days. Current remaining balance is ${balance.remaining.toFixed(1)} days; after approval it would be ${projected.toFixed(1)} days. Approval is still permitted.</div>` : '';
   const today = new Date().toISOString().slice(0,10);
-  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Manager Actions</h2><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
+  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Manager Actions</h2><p><a class="button secondary" href="/leave-requests/${id}/edit">Modify Employee Leave</a></p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
   const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
@@ -494,6 +513,8 @@ export default {
 
       if (/^\/leave\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return editOwnPendingLeave(request, env.DB, user, Number(path.split('/')[2]));
 
+
+      if (user.isManager && /^\/leave-requests\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return managerEditEmployeeLeave(request, env.DB, user, Number(path.split('/')[2]));
 
       if (user.isManager && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
       if (user.isManager && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
