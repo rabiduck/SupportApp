@@ -102,6 +102,18 @@ const V9_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='9' WHERE key='schema_version'"
 ];
 
+const V10_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS leave_types (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, code TEXT NOT NULL UNIQUE, description TEXT, entitlement_based INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+  "CREATE TABLE IF NOT EXISTS leave_years (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, start_date TEXT NOT NULL, end_date TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, CHECK (end_date >= start_date))",
+  "CREATE TABLE IF NOT EXISTS employee_leave_entitlements (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, leave_year_id INTEGER NOT NULL, leave_type_id INTEGER NOT NULL, entitlement_hours REAL NOT NULL DEFAULT 0, adjustment_hours REAL NOT NULL DEFAULT 0, notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE (employee_id,leave_year_id,leave_type_id), FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE, FOREIGN KEY (leave_year_id) REFERENCES leave_years(id) ON DELETE CASCADE, FOREIGN KEY (leave_type_id) REFERENCES leave_types(id))",
+  "ALTER TABLE leave_requests ADD COLUMN leave_type_id INTEGER REFERENCES leave_types(id)",
+  "INSERT OR IGNORE INTO leave_types (name,code,description,entitlement_based) VALUES ('Annual Leave','ANNUAL','Paid annual leave',1),('TOIL','TOIL','Time off in lieu',0)",
+  "UPDATE leave_requests SET leave_type_id=(SELECT id FROM leave_types WHERE code='ANNUAL') WHERE leave_type_id IS NULL",
+  "CREATE INDEX IF NOT EXISTS idx_entitlements_employee_year ON employee_leave_entitlements(employee_id,leave_year_id)",
+  "CREATE INDEX IF NOT EXISTS idx_leave_requests_type ON leave_requests(leave_type_id)",
+  "UPDATE app_meta SET value='10' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -130,5 +142,6 @@ export async function ensureSchema(db) {
   if (version < 6) { await applyStatements(db, V6_SCHEMA_STATEMENTS); version = 6; }
   if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); version = 7; }
   if (version < 8) { await applyStatements(db, V8_SCHEMA_STATEMENTS); version = 8; }
-  if (version < 9) { await applyStatements(db, V9_SCHEMA_STATEMENTS); }
+  if (version < 9) { await applyStatements(db, V9_SCHEMA_STATEMENTS); version = 9; }
+  if (version < 10) { await applyStatements(db, V10_SCHEMA_STATEMENTS, true); }
 }
