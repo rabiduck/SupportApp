@@ -275,6 +275,41 @@ function balanceCard(b) {
   return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
 }
 
+async function dayActionsPage(request,db,user){
+ const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
+ if(employee!==user.display_name)return errorPage('Day actions are only available from your own rota row.',user,403);
+ const leave=await row(db,"SELECT * FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved') ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END,id DESC LIMIT 1",user.id,date,date);
+ const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",user.id,date);
+ let portion=null;if(leave){portion='FULL';if(date===leave.start_date)portion=leave.start_portion||'FULL';if(date===leave.end_date)portion=leave.end_portion||'FULL';}
+ let actions='';
+ if(leave){
+   actions+=`<div class="card"><h2>Annual Leave · ${leave.status==='pending'?'Pending':'Approved'}</h2><p>${h(portion==='FULL'?'Full Day':portion+' half day')}</p><div class="action-bar">${leave.status==='pending'?`<a class="button" href="/leave/${leave.id}/edit">Edit Request</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Withdraw</button></form>`:`<a class="button" href="/leave/${leave.id}/change">Request Modification</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form>`}</div></div>`;
+ } else {
+   actions+=`<div class="card"><h2>Annual Leave</h2><p>Request annual leave for this day.</p><div class="action-bar"><a class="button" href="/leave/quick?date=${date}&portion=FULL">Full Day</a><a class="button secondary" href="/leave/quick?date=${date}&portion=AM">AM</a><a class="button secondary" href="/leave/quick?date=${date}&portion=PM">PM</a></div></div>`;
+ }
+ if(!wfh && (!leave||portion!=='FULL')) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p>Request to work from home for the working portion of this day.</p><a class="button secondary" href="/wfh/request?employee=${encodeURIComponent(user.display_name)}&date=${date}">${user.isManager?'Record WFH':'Request WFH'}</a></div>`;
+ else if(wfh) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p><strong>${wfh.status==='pending'?'WFH Requested':'WFH Approved'}</strong></p></div>`;
+ return appPage('Day Actions',date,actions+`<div class="section-gap"><a class="button secondary" href="/rota?week=${date}">Back to Rota</a></div>`,user,'Rota',db);
+}
+
+async function quickLeavePage(request,db,user){
+ const url=new URL(request.url),date=String(url.searchParams.get('date')||''),portion=String(url.searchParams.get('portion')||'FULL').toUpperCase();
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!['FULL','AM','PM'].includes(portion))return errorPage('Invalid quick leave request.',user,400);
+ const clash=await row(db,"SELECT id FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved')",user.id,date,date);
+ if(clash)return redirect(request,`/day?employee=${encodeURIComponent(user.display_name)}&date=${date}`);
+ if(request.method.toUpperCase()==='POST'){
+   const form=await request.formData(),notes=String(form.get('employee_notes')||'').trim()||null,annualType=await row(db,"SELECT id FROM leave_types WHERE code='ANNUAL' LIMIT 1"),managerRecord=user.isManager;
+   if(!annualType)return errorPage('Annual Leave type is not configured.',user,500);
+   const made=await db.prepare("INSERT INTO leave_requests(employee_id,leave_type_id,start_date,end_date,start_portion,end_portion,status,employee_notes,reviewed_by,reviewed_at,manager_notes,entry_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(user.id,annualType.id,date,date,portion,portion,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
+   if(!managerRecord){const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);for(const m of managers)await createNotification(db,m.id,'leave_request',`Annual leave request · ${user.display_name}`,`${date} ${portion}`,`/leave-requests/${Number(made.meta?.last_row_id)}`);}
+   return redirect(request,`/rota?week=${date}`);
+ }
+ const label=portion==='FULL'?'Full Day':portion+' half day';
+ const content=`<div class="form-card"><h2>${user.isManager?'Record Annual Leave':'Request Annual Leave'}</h2><p><strong>${h(date)}</strong> · ${h(label)}</p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">${user.isManager?'Record Leave':'Submit Request'}</button><a class="button secondary" href="/day?employee=${encodeURIComponent(user.display_name)}&date=${date}">Cancel</a></div></form></div>`;
+ return appPage(user.isManager?'Record Annual Leave':'Request Annual Leave','Quick single-day request from the rota.',content,user,'Rota',db);
+}
+
 async function wfhRequestPage(request,db,user){
   const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
@@ -559,6 +594,8 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/day' && request.method.toUpperCase()==='GET') return dayActionsPage(request,env.DB,user);
+      if (path === '/leave/quick' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return quickLeavePage(request,env.DB,user);
       if (path === '/wfh/request' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhRequestPage(request,env.DB,user);
       if (user.isManager && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
       if (user.isManager && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
