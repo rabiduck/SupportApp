@@ -167,7 +167,10 @@ async function teamsPage(db, auth) {
       <label>Default Rota Pattern<select name="default_rota_pattern_id">${options(patterns, null, true, 'No Scheduled Hours')}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date"></label>
       <label>Managers</label>${managerCheckboxes(managers)}
-      <div class="action-bar"><button type="submit">Create Team</button></div><div class="action-bar"><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>
+      <div class="action-bar"><button type="submit">Create Team</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>`;
+  return htmlResponse('Teams', content, auth, 'Teams');
+}
+
 async function createTeam(request, db, auth) {
   const form = await request.formData();
   const name = String(form.get('name') || '').trim();
