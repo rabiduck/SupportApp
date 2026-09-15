@@ -72,6 +72,16 @@ async function calendarRota(request, db) {
   const shiftMap = new Map();
   for (const a of assignments) shiftMap.set(`${a.rota_pattern_id}:${a.week_number}:${a.day_of_week}`, a);
 
+  // Approved leave is an overlay: the underlying generated shift remains unchanged.
+  const weekEnd = isoDate(dates[6]);
+  const leaveRows = await rows(db, `SELECT employee_id,start_date,end_date FROM leave_requests
+    WHERE status='approved' AND start_date<=? AND end_date>=?`, weekEnd, isoDate(weekStart));
+  const leaveByEmployee = new Map();
+  for (const leave of leaveRows) {
+    if (!leaveByEmployee.has(Number(leave.employee_id))) leaveByEmployee.set(Number(leave.employee_id), []);
+    leaveByEmployee.get(Number(leave.employee_id)).push(leave);
+  }
+
   const today = isoDate(new Date());
   let lastTeam = null;
   const body = employees.map((e) => {
@@ -82,7 +92,13 @@ async function calendarRota(request, db) {
       const shift = shiftMap.get(`${e.pattern_id}:${cycleWeek}:${i}`);
       const code = shift?.code || 'OFF';
       const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}` : 'Off';
-      return `<td class="rota-cell shift-${h(code).toLowerCase()} ${isoDate(date) === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
+      const day = isoDate(date);
+      const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).some((leave) => leave.start_date <= day && leave.end_date >= day);
+      // Leave only replaces a scheduled working shift; OFF remains OFF.
+      if (approvedLeave && shift?.is_working_day) {
+        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`Annual Leave · scheduled ${code}`)}"><strong>LEAVE</strong></td>`;
+      }
+      return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
     }).join('');
     return `${group}<tr><td class="employee-cell"><strong>${h(e.display_name)}</strong><br><span class="muted">${h(e.pattern_name)} · ${cycleWeek}/${e.cycle_length_weeks}</span></td><td class="team-cell">${h(e.team_name)}</td>${cells}</tr>`;
   }).join('');
@@ -98,7 +114,7 @@ async function calendarRota(request, db) {
     <div class="week-range"><strong>${h(formatRange(weekStart))}</strong></div>
   </div>
   ${table}
-  <div class="notice section-gap">Shifts are calculated for the selected calendar week from each employee's team default or individual rota override and its pattern start date.</div>`;
+  <div class="notice section-gap">Shifts are calculated from each employee's rota pattern. Approved annual leave overlays scheduled working days without changing the underlying pattern.</div>`;
   return new Response(shell(content), { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
