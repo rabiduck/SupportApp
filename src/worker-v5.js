@@ -136,6 +136,7 @@ function nav(user, active = '') {
     return `<div class="nav-group"><button type="button" class="nav-group-toggle" data-nav-group="${si}" aria-expanded="${open?'true':'false'}"><span>${section.name}</span><span class="nav-chevron">›</span></button><div class="nav-children" data-nav-children="${si}" ${open?'':'hidden'}>${section.items.map(([label,href,key])=>`<a class="${active===key?'active':''}" href="${href}">${label}</a>`).join('')}</div></div>`;
   }).join('');
 }
+function modalScript(){return `<script>(()=>{document.querySelectorAll('[data-modal-open]').forEach(b=>b.addEventListener('click',()=>{const d=document.getElementById(b.dataset.modalOpen);if(d)d.showModal()}));document.querySelectorAll('[data-modal-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog')?.close()));document.querySelectorAll('dialog.app-modal').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close()}));document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('dialog.app-modal[open]')?.close()})})()</script>`;}
 function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-group-toggle').forEach(b=>{const id=b.dataset.navGroup,c=document.querySelector('[data-nav-children="'+id+'"]'),key='supportapp.nav.'+b.querySelector('span').textContent;const current=b.getAttribute('aria-expanded')==='true';if(!current&&localStorage.getItem(key)==='open'){c.hidden=false;b.setAttribute('aria-expanded','true')}b.addEventListener('click',()=>{const open=b.getAttribute('aria-expanded')==='true';b.setAttribute('aria-expanded',String(!open));c.hidden=open;localStorage.setItem(key,open?'closed':'open')})})})()</script>`;}
 
 function activeForPath(path) {
@@ -171,7 +172,7 @@ async function decorateResponse(response, user, path, localAuth = false, db = nu
   // Most application pages are rendered by the older workers and then decorated here,
   // so inject the live mailbox polling script during decoration as well.
   if (!text.includes('/api/notifications/unread-count')) {
-    text = text.replace('</body>', `${notificationPollScript()}${navTreeScript()}</body>`);
+    text = text.replace('</body>', `${notificationPollScript()}${modalScript()}${navTreeScript()}</body>`);
   }
   return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
