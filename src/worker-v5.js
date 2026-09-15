@@ -801,20 +801,6 @@ export default {
         if (!path.startsWith('/rota') && !path.startsWith('/wfh/') && !path.startsWith('/assets/')) return accessPage('Access Denied', 'Employees have rota access only.', 403);
       }
 
-      if (user.isSystemAdmin && /^\/teams\/\d+\/edit$/.test(path) && request.method.toUpperCase()==='GET') {
-        const id=Number(path.split('/')[2]),team=await row(env.DB,'SELECT * FROM teams WHERE id=?',id);if(!team)return accessPage('Not Found','Team not found.',404);
-        const base=await appWorker.fetch(requestForApp,{...env,AUTH_REQUIRED:'true'}),type=base.headers.get('content-type')||'';if(!type.includes('text/html'))return base;
-        let html=await base.text(),control=`<div style="margin:18px 0;padding:14px;border:1px solid #b9dce5;border-radius:6px;background:#f7fcfd"><strong style="display:block;margin-bottom:8px">Gatekeeping</strong><label style="display:flex;align-items:center;gap:10px;margin:0"><input type="checkbox" name="gatekeeper_enabled" value="1" ${team.gatekeeper_enabled?'checked':''} style="width:auto"> Include this team in the Gatekeeper rotation</label></div>`;
-        html=html.replace(/(<label>Pattern Start Date[\s\S]*?<\/label>)/,'$1'+control);
-        return decorateResponse(new Response(html,{status:base.status,headers:base.headers}),user,path,localAuth,env.DB);
-      }
-      if (user.isSystemAdmin && /^\/teams\/\d+\/edit$/.test(path) && request.method.toUpperCase()==='POST') {
-        const form=await request.clone().formData(),enabled=form.has('gatekeeper_enabled')?1:0,id=Number(path.split('/')[2]);
-        const base=await appWorker.fetch(requestForApp,{...env,AUTH_REQUIRED:'true'});
-        await env.DB.prepare('UPDATE teams SET gatekeeper_enabled=? WHERE id=?').bind(enabled,id).run();
-        return base;
-      }
-
       if (user.isManager && !user.isSystemAdmin) {
         if (path === '/employees' || /^\/employees\/\d+\/edit$/.test(path)) return decorateResponse(await managerEmployees(request, env.DB, user), user, path, localAuth, env.DB);
         if (isManagerConfigPath(path)) return decorateResponse(await configWorker.fetch(requestForApp, env), user, path, localAuth, env.DB);
