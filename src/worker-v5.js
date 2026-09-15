@@ -114,16 +114,17 @@ async function enrichUser(db, employee) {
 
 function nav(user, active = '') {
   const links = user.isSystemAdmin
-    ? [['Dashboard','/'],['Rota','/rota'],['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
+    ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
     : user.isManager
-      ? [['Dashboard','/'],['Rota','/rota'],['Employees','/employees'],['Shift Patterns','/shift-patterns']]
-      : [['Rota','/rota']];
+      ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Employees','/employees'],['Shift Patterns','/shift-patterns']]
+      : [['Rota','/rota'],['My Leave','/leave']];
   return links.map(([name, href]) => `<a class="${active === name ? 'active' : ''}" href="${href}">${name}</a>`).join('');
 }
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
   if (path.startsWith('/rota')) return 'Rota';
+  if (path.startsWith('/leave')) return 'My Leave';
   if (path.startsWith('/teams')) return 'Teams';
   if (path.startsWith('/employees')) return 'Employees';
   if (path.startsWith('/shift-') || path.startsWith('/week-patterns') || path.startsWith('/rota-patterns')) return 'Shift Patterns';
@@ -171,6 +172,41 @@ function passwordForm(target, message = '') {
   return simplePage(`Set password · ${target.display_name}`, `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card" style="max-width:520px"><p class="muted">Setting a new password also signs this user out of any existing sessions.</p><form method="post"><label>New password<input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus></label><label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" minlength="10" required></label><div class="action-bar"><button type="submit">Set password</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>`);
 }
 
+function appPage(title, description, content, user, active = '') {
+  const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
+}
+
+function leaveStatus(status) {
+  const label = String(status || '').replace(/^./, (x) => x.toUpperCase());
+  return `<span class="status-badge ${status === 'approved' ? 'status-active' : status === 'rejected' || status === 'cancelled' ? 'status-inactive' : ''}">${h(label)}</span>`;
+}
+
+async function myLeavePage(request, db, user) {
+  const method = request.method.toUpperCase();
+  let message = '';
+  if (method === 'POST') {
+    const form = await request.formData();
+    const startDate = String(form.get('start_date') || '').trim();
+    const endDate = String(form.get('end_date') || '').trim();
+    const notes = String(form.get('employee_notes') || '').trim() || null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      message = 'Start and end dates are required.';
+    } else if (endDate < startDate) {
+      message = 'End date cannot be before start date.';
+    } else {
+      await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,status,employee_notes) VALUES (?,?,?,'pending',?)").bind(user.id,startDate,endDate,notes).run();
+      return redirect(request, '/leave');
+    }
+  }
+
+  const requests = await rows(db, `SELECT lr.*, reviewer.display_name AS reviewer_name FROM leave_requests lr LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.employee_id=? ORDER BY lr.requested_at DESC,lr.id DESC`, user.id);
+  const table = requests.length ? `<table><thead><tr><th>Dates</th><th>Status</th><th>Notes</th><th>Requested</th><th>Reviewed By</th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.start_date)}</strong>${r.end_date !== r.start_date ? ` → <strong>${h(r.end_date)}</strong>` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td>${h(String(r.requested_at || '').slice(0,16).replace('T',' '))}</td><td>${h(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">You have not submitted any annual leave requests yet.</div>';
+  const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>End Date<input name="end_date" type="date" required></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
+  return appPage('My Leave', 'Request annual leave and track the status of your requests.', content, user, 'My Leave');
+}
+
 export default {
   async fetch(request, env) {
     try {
@@ -198,6 +234,8 @@ export default {
       }
 
       if (localAuth && /^\/employees\/\d+\/password$/.test(path)) return passwordPage(request, env.DB, user, Number(path.split('/')[2]));
+
+      if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
 
       const requestForApp = withIdentityHeader(request, user.email || identity.email || null);
       if (!user.isManager && !user.isSystemAdmin) {
