@@ -135,7 +135,7 @@ async function calendarRota(request, db) {
     const tr=td.closest('tr'), idx=[...tr.children].indexOf(td)-2;
     if(idx<0)return;
     const name=tr.querySelector('.employee-cell strong')?.textContent, date=${JSON.stringify(dates.map(isoDate))}[idx];
-    if(name&&date) location.href='/wfh/request?employee='+encodeURIComponent(name)+'&date='+date;
+    if(name&&date) location.href='/day?employee='+encodeURIComponent(name)+'&date='+date;
   }));
   </script>`), { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
