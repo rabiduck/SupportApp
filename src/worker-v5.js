@@ -109,7 +109,8 @@ async function enrichUser(db, employee) {
   const managedTeamRows = await rows(db, 'SELECT team_id FROM team_managers WHERE employee_id=? ORDER BY team_id', employee.id);
   const isSystemAdmin = roles.includes('SystemAdmin');
   const isManager = roles.includes('Manager');
-  return { ...employee, roles, isSystemAdmin, isManager, primaryRole: isSystemAdmin ? 'SystemAdmin' : isManager ? 'Manager' : 'Employee', managedTeamIds: managedTeamRows.map((x) => Number(x.team_id)) };
+  const isTeamLeader = roles.includes('TeamLeader');
+  return { ...employee, roles, isSystemAdmin, isManager, isTeamLeader, primaryRole: isSystemAdmin ? 'SystemAdmin' : isManager ? 'Manager' : isTeamLeader ? 'TeamLeader' : 'Employee', managedTeamIds: managedTeamRows.map((x) => Number(x.team_id)) };
 }
 
 function nav(user, active = '') {
@@ -278,18 +279,31 @@ function balanceCard(b) {
 async function dayActionsPage(request,db,user){
  const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
- if(employee!==user.display_name)return errorPage('Day actions are only available from your own rota row.',user,403);
- const leave=await row(db,"SELECT * FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved') ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END,id DESC LIMIT 1",user.id,date,date);
- const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",user.id,date);
+ const target=await row(db,'SELECT id,display_name,team_id FROM employees WHERE display_name=? AND is_active=1 LIMIT 1',employee);
+ if(!target)return errorPage('Employee not found.',user,404);
+ const own=Number(target.id)===Number(user.id), elevated=user.isManager||user.isTeamLeader;
+ if(!own&&!elevated)return accessPage('Access Denied','You cannot view day actions for another employee.',403);
+ const leave=await row(db,"SELECT * FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved') ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END,id DESC LIMIT 1",target.id,date,date);
+ const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",target.id,date);
  let portion=null;if(leave){portion='FULL';if(date===leave.start_date)portion=leave.start_portion||'FULL';if(date===leave.end_date)portion=leave.end_portion||'FULL';}
+ if(!own){
+   let info=`<div class="card"><h2>${h(target.display_name)}</h2><p><strong>${h(date)}</strong></p>`;
+   if(leave)info+=`<p><strong>Annual Leave:</strong> ${h(portion==='FULL'?'Full Day':portion+' half day')} · ${h(leave.status)}</p>`;
+   if(wfh)info+=`<p><strong>WFH:</strong> ${h(wfh.status)}</p>`;
+   if(!leave&&!wfh)info+='<p class="muted">No leave or WFH activity recorded for this day.</p>';
+   info+='</div>';
+   if(user.isManager&&user.managedTeamIds.includes(Number(target.team_id))){
+     if(leave?.status==='approved')info+=`<div class="card section-gap"><h2>Manager Actions</h2><div class="action-bar"><a class="button secondary" href="/leave-requests/${leave.id}/edit">Modify Employee Leave</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form></div></div>`;
+     if(wfh&&['pending','approved'].includes(wfh.status))info+=`<div class="card section-gap"><h2>WFH</h2><div class="action-bar">${wfh.status==='pending'?`<a class="button" href="/wfh-requests/${wfh.id}">Review Request</a>`:''}<form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">Cancel WFH</button></form></div></div>`;
+   }
+   return appPage('Day Actions',date,info+`<div class="section-gap"><a class="button secondary" href="/rota?week=${date}">Back to Rota</a></div>`,user,'Rota',db);
+ }
  let actions='';
  if(leave){
    actions+=`<div class="card"><h2>Annual Leave · ${leave.status==='pending'?'Pending':'Approved'}</h2><p>${h(portion==='FULL'?'Full Day':portion+' half day')}</p><div class="action-bar">${leave.status==='pending'?`<a class="button" href="/leave/${leave.id}/edit">Edit Request</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Withdraw</button></form>`:`<a class="button" href="/leave/${leave.id}/change">Request Modification</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form>`}</div></div>`;
- } else {
-   actions+=`<div class="card"><h2>Annual Leave</h2><p>Request annual leave for this day.</p><div class="action-bar"><a class="button" href="/leave/quick?date=${date}&portion=FULL">Full Day</a><a class="button secondary" href="/leave/quick?date=${date}&portion=AM">AM</a><a class="button secondary" href="/leave/quick?date=${date}&portion=PM">PM</a></div></div>`;
- }
- if(!wfh && (!leave||portion!=='FULL')) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p>Request to work from home for the working portion of this day.</p><a class="button secondary" href="/wfh/request?employee=${encodeURIComponent(user.display_name)}&date=${date}">${user.isManager?'Record WFH':'Request WFH'}</a></div>`;
- else if(wfh) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p><strong>${wfh.status==='pending'?'WFH Requested':'WFH Approved'}</strong></p><form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">${wfh.status==='pending'?'Withdraw WFH Request':'Cancel WFH'}</button></form></div>`;
+ } else actions+=`<div class="card"><h2>Annual Leave</h2><p>Request annual leave for this day.</p><div class="action-bar"><a class="button" href="/leave/quick?date=${date}&portion=FULL">Full Day</a><a class="button secondary" href="/leave/quick?date=${date}&portion=AM">AM</a><a class="button secondary" href="/leave/quick?date=${date}&portion=PM">PM</a></div></div>`;
+ if(!wfh&&(!leave||portion!=='FULL'))actions+=`<div class="card section-gap"><h2>Working From Home</h2><p>Request to work from home for the working portion of this day.</p><a class="button secondary" href="/wfh/request?employee=${encodeURIComponent(user.display_name)}&date=${date}">${user.isManager?'Record WFH':'Request WFH'}</a></div>`;
+ else if(wfh)actions+=`<div class="card section-gap"><h2>Working From Home</h2><p><strong>${wfh.status==='pending'?'WFH Requested':'WFH Approved'}</strong></p><form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">${wfh.status==='pending'?'Withdraw WFH Request':'Cancel WFH'}</button></form></div>`;
  return appPage('Day Actions',date,actions+`<div class="section-gap"><a class="button secondary" href="/rota?week=${date}">Back to Rota</a></div>`,user,'Rota',db);
 }
 
