@@ -289,7 +289,7 @@ async function dayActionsPage(request,db,user){
    actions+=`<div class="card"><h2>Annual Leave</h2><p>Request annual leave for this day.</p><div class="action-bar"><a class="button" href="/leave/quick?date=${date}&portion=FULL">Full Day</a><a class="button secondary" href="/leave/quick?date=${date}&portion=AM">AM</a><a class="button secondary" href="/leave/quick?date=${date}&portion=PM">PM</a></div></div>`;
  }
  if(!wfh && (!leave||portion!=='FULL')) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p>Request to work from home for the working portion of this day.</p><a class="button secondary" href="/wfh/request?employee=${encodeURIComponent(user.display_name)}&date=${date}">${user.isManager?'Record WFH':'Request WFH'}</a></div>`;
- else if(wfh) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p><strong>${wfh.status==='pending'?'WFH Requested':'WFH Approved'}</strong></p></div>`;
+ else if(wfh) actions+=`<div class="card section-gap"><h2>Working From Home</h2><p><strong>${wfh.status==='pending'?'WFH Requested':'WFH Approved'}</strong></p><form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">${wfh.status==='pending'?'Withdraw WFH Request':'Cancel WFH'}</button></form></div>`;
  return appPage('Day Actions',date,actions+`<div class="section-gap"><a class="button secondary" href="/rota?week=${date}">Back to Rota</a></div>`,user,'Rota',db);
 }
 
@@ -333,6 +333,20 @@ async function wfhRequestPage(request,db,user){
   return appPage(user.isManager?'Record WFH':'Request WFH','Single-day working from home.',content,user,'Rota',db);
 }
 
+async function cancelWfh(request,db,user,id){
+ const item=await row(db,`SELECT w.*,e.team_id,e.display_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id WHERE w.id=?`,id);
+ if(!item)return errorPage('WFH request not found.',user,404);
+ const own=Number(item.employee_id)===Number(user.id),managed=user.isManager&&user.managedTeamIds.includes(Number(item.team_id));
+ if(!own&&!managed)return accessPage('Access Denied','You cannot cancel this WFH record.',403);
+ if(!['pending','approved'].includes(item.status))return errorPage('This WFH record can no longer be cancelled.',user,400);
+ await db.prepare("UPDATE wfh_requests SET status='cancelled',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?").bind(user.id,own?'Cancelled by employee':'Cancelled by Manager',id).run();
+ if(own){
+   const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,item.team_id,user.id);
+   for(const m of managers)await createNotification(db,m.id,'wfh_cancelled',`WFH cancelled · ${item.display_name}`,item.request_date,'/wfh-requests');
+ } else await createNotification(db,item.employee_id,'wfh_cancelled_manager',`WFH cancelled by ${user.display_name}`,item.request_date,'/rota');
+ return redirect(request,own?`/rota?week=${item.request_date}`:'/wfh-requests');
+}
+
 async function wfhRequestsPage(request,db,user){
  const reqs=await rows(db,`SELECT w.*,e.display_name,t.name team_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id JOIN teams t ON t.id=e.team_id WHERE e.team_id IN (${user.managedTeamIds.map(()=>'?').join(',')||'NULL'}) ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END,w.request_date DESC`,...user.managedTeamIds);
  const table=reqs.length?`<table><thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>${reqs.map(r=>`<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.request_date)}</td><td>${leaveStatus(r.status)}</td><td><a class="button secondary" href="/wfh-requests/${r.id}">${r.status==='pending'?'Review':'View'}</a></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No WFH requests.</div>';
@@ -350,7 +364,8 @@ async function wfhReviewPage(request,db,user,id){
    await createNotification(db,item.employee_id,'wfh_review',`WFH request ${decision}`,`${item.request_date}${notes?` · ${notes}`:''}`,'/rota');
    return redirect(request,'/wfh-requests');
  }
- const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
+ const managerCancel=['pending','approved'].includes(item.status)?`<form method="post" action="/wfh/${item.id}/cancel" class="section-gap"><button class="secondary">${item.status==='pending'?'Cancel Request':'Cancel WFH'}</button></form>`:'';
+ const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${managerCancel}${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
  return appPage('Review WFH Request','Review a single-day WFH request.',content,user,'WFH Requests',db);
 }
 
@@ -596,6 +611,7 @@ export default {
 
       if (path === '/day' && request.method.toUpperCase()==='GET') return dayActionsPage(request,env.DB,user);
       if (path === '/leave/quick' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return quickLeavePage(request,env.DB,user);
+      if (/^\/wfh\/\d+\/cancel$/.test(path) && request.method.toUpperCase()==='POST') return cancelWfh(request,env.DB,user,Number(path.split('/')[2]));
       if (path === '/wfh/request' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhRequestPage(request,env.DB,user);
       if (user.isManager && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
       if (user.isManager && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
