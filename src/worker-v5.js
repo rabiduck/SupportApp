@@ -292,7 +292,9 @@ async function myLeavePage(request, db, user) {
       message = 'For a single-day request choose Full Day, AM or PM consistently.';
     } else {
       const effectiveEndPortion = startDate === endDate ? startPortion : endPortion;
-      const created = await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,start_portion,end_portion,status,employee_notes) VALUES (?,?,?,?,?,'pending',?)").bind(user.id,startDate,endDate,startPortion,effectiveEndPortion,notes).run();
+      const annualType = await row(db, "SELECT id FROM leave_types WHERE code='ANNUAL'");
+      if (!annualType) return errorPage('Annual Leave is not configured.', user, 500);
+      const created = await db.prepare("INSERT INTO leave_requests (employee_id,leave_type_id,start_date,end_date,start_portion,end_portion,status,employee_notes) VALUES (?,?,?,?,?,?,'pending',?)").bind(user.id,annualType.id,startDate,endDate,startPortion,effectiveEndPortion,notes).run();
       const leaveId = Number(created.meta?.last_row_id);
       const managers = await rows(db, `SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id LEFT JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND (r.name='SystemAdmin' OR (r.name='Manager' AND tm.team_id=?)) AND e.id<>?`, user.team_id,user.id);
       for (const manager of managers) await createNotification(db, manager.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate} ${startPortion}${endDate!==startDate?` → ${endDate} ${effectiveEndPortion}`:''}`, `/leave-requests/${leaveId}`);
