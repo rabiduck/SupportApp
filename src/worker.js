@@ -83,6 +83,11 @@ async function calendarRota(request, db) {
     leaveByEmployee.get(Number(leave.employee_id)).push(leave);
   }
 
+  const absenceRows = await rows(db, `SELECT a.*,t.name type_name,t.code type_code FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.is_active=1 AND a.start_date<=? AND a.end_date>=?`, weekEnd, isoDate(weekStart));
+  const sicknessRows = await rows(db, `SELECT * FROM sickness WHERE is_active=1 AND start_date<=? AND end_date>=?`, weekEnd, isoDate(weekStart));
+  const absenceMap = new Map(), sicknessMap = new Map();
+  for (const a of absenceRows) for (const d of dates) { const day=isoDate(d); if(day>=a.start_date&&day<=a.end_date) absenceMap.set(`${a.employee_id}:${day}`,a); }
+  for (const s of sicknessRows) for (const d of dates) { const day=isoDate(d); if(day>=s.start_date&&day<=s.end_date) sicknessMap.set(`${s.employee_id}:${day}`,s); }
   const wfhRows = await rows(db, `SELECT employee_id,request_date,status FROM wfh_requests WHERE request_date>=? AND request_date<=? AND status IN ('pending','approved')`, isoDate(weekStart), weekEnd);
   const wfhMap = new Map(wfhRows.map(x => [`${x.employee_id}:${x.request_date}`, x.status]));
   const today = isoDate(new Date());
@@ -98,6 +103,17 @@ async function calendarRota(request, db) {
       const day = isoDate(date);
       const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
+      const absence = absenceMap.get(`${e.id}:${day}`), sick = sicknessMap.get(`${e.id}:${day}`);
+      if (sick && shift?.is_working_day) {
+        let p='FULL'; if(day===sick.start_date)p=sick.start_portion||'FULL'; if(day===sick.end_date)p=sick.end_portion||'FULL';
+        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>`, line=`<strong>SICK${p==='FULL'?'':` ${h(p)}`}</strong>`;
+        return `<td class="rota-cell shift-leave ${day===today?'today':''}" title="${h(`Sickness · scheduled ${code}`)}">${p==='PM'?`${shiftLine}<br>${line}`:`${line}<br>${shiftLine}`}</td>`;
+      }
+      if (absence && shift?.is_working_day) {
+        let p='FULL'; if(day===absence.start_date)p=absence.start_portion||'FULL'; if(day===absence.end_date)p=absence.end_portion||'FULL';
+        const shiftLine=`<span class="rota-underlying-shift">${h(code)}</span>`, line=`<strong>${h(absence.type_name.toUpperCase())}${p==='FULL'?'':` ${h(p)}`}</strong>`;
+        return `<td class="rota-cell shift-leave ${day===today?'today':''}" title="${h(`${absence.type_name} · scheduled ${code}`)}">${p==='PM'?`${shiftLine}<br>${line}`:`${line}<br>${shiftLine}`}</td>`;
+      }
       const wfh = wfhMap.get(`${e.id}:${day}`);
       if (approvedLeave && shift?.is_working_day) {
         let portion = 'FULL';
