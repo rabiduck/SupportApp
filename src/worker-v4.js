@@ -244,8 +244,13 @@ async function editEmployeePage(db, id, auth) {
   const patterns = await rows(db, "SELECT id,name FROM rota_patterns WHERE is_active=1 AND name<>'No Scheduled Hours' ORDER BY name");
   let roles = await rows(db, 'SELECT id,name FROM roles ORDER BY name');
   if (!auth.isSystemAdmin) roles = roles.filter(r => r.name === 'Engineer' || r.name === employee.role_name);
+  const leaveYears = await rows(db, 'SELECT id,name,start_date,end_date FROM leave_years WHERE is_active=1 ORDER BY start_date DESC');
+  const annualType = await row(db, "SELECT id FROM leave_types WHERE code='ANNUAL'");
+  const entitlements = annualType ? await rows(db, 'SELECT leave_year_id,entitlement_hours,adjustment_hours,notes FROM employee_leave_entitlements WHERE employee_id=? AND leave_type_id=?', id, annualType.id) : [];
+  const entitlementMap = new Map(entitlements.map(x => [Number(x.leave_year_id), x]));
+  const leaveSection = leaveYears.length ? `<div class="form-card section-gap"><h2>Annual Leave Entitlement</h2><p class="muted">Enter the authoritative entitlement for each leave year in hours. Adjustments are kept separately for carry-over or exceptional changes.</p><form method="post" action="/employees/${id}/leave-entitlement">${leaveYears.map(y=>{const e=entitlementMap.get(Number(y.id))||{};return `<div class="card section-gap"><strong>${h(y.name)}</strong> <span class="muted">${h(y.start_date)} → ${h(y.end_date)}</span><input type="hidden" name="leave_year_id" value="${y.id}"><label>Entitlement Hours<input type="number" name="entitlement_hours_${y.id}" min="0" step="0.25" value="${h(e.entitlement_hours ?? 0)}"></label><label>Adjustment Hours<input type="number" name="adjustment_hours_${y.id}" step="0.25" value="${h(e.adjustment_hours ?? 0)}"></label><label>Notes<input name="entitlement_notes_${y.id}" maxlength="255" value="${h(e.notes||'')}"></label></div>`}).join('')}<div class="action-bar"><button type="submit">Save Entitlement</button></div></form></div>` : '<div class="notice section-gap"><strong>No leave year configured.</strong><br>A SystemAdmin needs to create a leave year before entitlement can be assigned.</div>';
   const content = `${pageHeader('Edit Employee','Update identity, access, team membership and rota settings.')}
-    <div class="form-card"><form method="post" action="/employees/${id}/edit"><label>Display Name<input name="display_name" required maxlength="100" value="${h(employee.display_name)}"></label><label>Username<input name="username" required maxlength="100" value="${h(employee.username||'')}"></label><label>Email<input name="email" type="email" required maxlength="200" value="${h(employee.email||'')}"></label><label>Role<select name="role_id" required>${options(roles,employee.role_id)}</select></label><label>Team<select name="team_id" required>${options(teams,employee.team_id)}</select></label><label>Job Title<input name="job_title" maxlength="100" value="${h(employee.job_title||'')}"></label><label>Phone<input name="phone" maxlength="50" value="${h(employee.phone||'')}"></label><label>Rota Override<select name="override_rota_pattern_id">${options(patterns,employee.override_rota_pattern_id,true,'— Inherit team default —')}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date" value="${h(employee.override_pattern_start_date||'')}"></label><label class="checkbox-label"><input type="checkbox" name="is_active" ${employee.is_active?'checked':''}> Active</label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>`;
+    <div class="form-card"><form method="post" action="/employees/${id}/edit"><label>Display Name<input name="display_name" required maxlength="100" value="${h(employee.display_name)}"></label><label>Username<input name="username" required maxlength="100" value="${h(employee.username||'')}"></label><label>Email<input name="email" type="email" required maxlength="200" value="${h(employee.email||'')}"></label><label>Role<select name="role_id" required>${options(roles,employee.role_id)}</select></label><label>Team<select name="team_id" required>${options(teams,employee.team_id)}</select></label><label>Job Title<input name="job_title" maxlength="100" value="${h(employee.job_title||'')}"></label><label>Phone<input name="phone" maxlength="50" value="${h(employee.phone||'')}"></label><label>Rota Override<select name="override_rota_pattern_id">${options(patterns,employee.override_rota_pattern_id,true,'— Inherit team default —')}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date" value="${h(employee.override_pattern_start_date||'')}"></label><label class="checkbox-label"><input type="checkbox" name="is_active" ${employee.is_active?'checked':''}> Active</label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>${leaveSection}`;
   return htmlResponse('Edit Employee', content, auth, 'Employees');
 }
 
@@ -288,6 +293,37 @@ async function saveEmployee(request, db, auth, id = null) {
     if (msg.includes('employees.email')) return friendlyError('Duplicate Email',`The email address “${email}” is already in use.`,auth,'Employees',409);
     throw error;
   }
+}
+
+async function saveLeaveEntitlement(request, db, id, auth) {
+  const employee = await row(db,'SELECT team_id FROM employees WHERE id=?',id);
+  if (!employee || !canManageTeam(auth, employee.team_id)) return friendlyError('Access Denied','This employee is outside your management scope.',auth,'Employees',403);
+  const annualType = await row(db,"SELECT id FROM leave_types WHERE code='ANNUAL'");
+  if (!annualType) return friendlyError('Leave Configuration Error','Annual Leave has not been configured.',auth,'Employees',500);
+  const form = await request.formData();
+  for (const rawYearId of form.getAll('leave_year_id')) {
+    const yearId=Number(rawYearId); if(!yearId) continue;
+    const entitlement=Math.max(0,Number(form.get(`entitlement_hours_${yearId}`))||0);
+    const adjustment=Number(form.get(`adjustment_hours_${yearId}`))||0;
+    const notes=String(form.get(`entitlement_notes_${yearId}`)||'').trim()||null;
+    await db.prepare(`INSERT INTO employee_leave_entitlements (employee_id,leave_year_id,leave_type_id,entitlement_hours,adjustment_hours,notes) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(employee_id,leave_year_id,leave_type_id) DO UPDATE SET entitlement_hours=excluded.entitlement_hours,adjustment_hours=excluded.adjustment_hours,notes=excluded.notes,updated_at=CURRENT_TIMESTAMP`)
+      .bind(id,yearId,annualType.id,entitlement,adjustment,notes).run();
+  }
+  return redirect(request,`/employees/${id}/edit`);
+}
+
+async function leaveYearsPage(request, db, auth) {
+  if (request.method.toUpperCase()==='POST') {
+    const form=await request.formData(); const name=String(form.get('name')||'').trim(); const start=String(form.get('start_date')||''); const end=String(form.get('end_date')||'');
+    if(!name||!start||!end||end<start) return friendlyError('Invalid Leave Year','Name and a valid date range are required.',auth,'Administration');
+    await db.prepare('INSERT INTO leave_years (name,start_date,end_date) VALUES (?,?,?)').bind(name,start,end).run();
+    return redirect(request,'/leave-years');
+  }
+  const years=await rows(db,'SELECT * FROM leave_years ORDER BY start_date DESC');
+  const table=years.length?`<table><thead><tr><th>Leave Year</th><th>Starts</th><th>Ends</th><th>Status</th></tr></thead><tbody>${years.map(y=>`<tr><td><strong>${h(y.name)}</strong></td><td>${h(y.start_date)}</td><td>${h(y.end_date)}</td><td>${statusBadge(y.is_active)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No leave years configured.</div>';
+  const content=`${pageHeader('Leave Years','Define the periods against which annual leave entitlement is recorded.')}<div class="table-card">${table}</div><div class="form-card section-gap"><h2>Create Leave Year</h2><form method="post"><label>Name<input name="name" required placeholder="2026"></label><label>Start Date<input type="date" name="start_date" required></label><label>End Date<input type="date" name="end_date" required></label><div class="action-bar"><button type="submit">Create Leave Year</button></div></form></div>`;
+  return htmlResponse('Leave Years',content,auth,'Administration');
 }
 
 async function toggleEmployee(request, db, id, auth) {
@@ -339,7 +375,13 @@ export default {
         if (method === 'POST' && path === '/employees') return saveEmployee(request, env.DB, auth);
         if (method === 'GET' && /^\/employees\/\d+\/edit$/.test(path)) return editEmployeePage(env.DB, Number(path.split('/')[2]), auth);
         if (method === 'POST' && /^\/employees\/\d+\/edit$/.test(path)) return saveEmployee(request, env.DB, auth, Number(path.split('/')[2]));
+        if (method === 'POST' && /^\/employees\/\d+\/leave-entitlement$/.test(path)) return saveLeaveEntitlement(request, env.DB, Number(path.split('/')[2]), auth);
         if (method === 'POST' && /^\/employees\/\d+\/toggle$/.test(path)) return toggleEmployee(request, env.DB, Number(path.split('/')[2]), auth);
+      }
+
+      if (path === '/leave-years') {
+        if (!auth.isSystemAdmin) return friendlyError('Access Denied','Leave year configuration requires SystemAdmin.',auth,'Administration',403);
+        return leaveYearsPage(request, env.DB, auth);
       }
 
       const adminPath = path === '/administration' || path === '/shift-patterns' || /^\/(week-patterns|rota-patterns|shift-types)\//.test(path) || path === '/week-patterns' || path === '/rota-patterns';
