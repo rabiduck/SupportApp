@@ -99,9 +99,15 @@ async function calendarRota(request, db) {
         let portion = 'FULL';
         if (day === approvedLeave.start_date) portion = approvedLeave.start_portion || 'FULL';
         if (day === approvedLeave.end_date) portion = approvedLeave.end_portion || 'FULL';
-        const label = portion === 'FULL' ? 'LEAVE' : `LEAVE ${portion}`;
         const detail = portion === 'FULL' ? 'Annual Leave' : `Annual Leave · ${portion} half day`;
-        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}`)}"><strong>${h(label)}</strong></td>`;
+        // For half days, show the calendar in chronological order: AM leave precedes
+        // the underlying shift, while PM leave follows it.
+        const shiftLine = `<span class="rota-underlying-shift">${h(code)}</span>`;
+        const leaveLine = `<strong>LEAVE${portion === 'FULL' ? '' : ` ${h(portion)}`}</strong>`;
+        const display = portion === 'PM'
+          ? `${shiftLine}<br>${leaveLine}`
+          : `${leaveLine}<br>${shiftLine}`;
+        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}`)}">${display}</td>`;
       }
       return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
     }).join('');
