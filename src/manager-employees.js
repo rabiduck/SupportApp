@@ -58,7 +58,31 @@ async function editPage(db, id, user) {
   const patterns = await rows(db, "SELECT id,name FROM rota_patterns WHERE is_active=1 AND name<>'No Scheduled Hours' ORDER BY name");
   const teamOptions = teams.map(t => `<option value="${t.id}" ${Number(t.id)===Number(employee.team_id)?'selected':''}>${h(t.name)}</option>`).join('');
   const patternOptions = `<option value="">— Inherit team default —</option>${patterns.map(p => `<option value="${p.id}" ${Number(p.id)===Number(employee.override_rota_pattern_id)?'selected':''}>${h(p.name)}</option>`).join('')}`;
-  return response('Edit Employee', `${pageHeader('Edit Employee','Update identity, team membership and rota settings.')}<div class="form-card"><form method="post" action="/employees/${id}/edit"><label>Display Name<input name="display_name" required value="${h(employee.display_name)}"></label><label>Username<input name="username" required value="${h(employee.username||'')}"></label><label>Email<input name="email" type="email" required value="${h(employee.email||'')}"></label><label>Role<input value="Employee" disabled></label><label>Team<select name="team_id" required>${teamOptions}</select></label><label>Job Title<input name="job_title" value="${h(employee.job_title||'')}"></label><label>Phone<input name="phone" value="${h(employee.phone||'')}"></label><label>Rota Override<select name="override_rota_pattern_id">${patternOptions}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date" value="${h(employee.override_pattern_start_date||'')}"></label><label class="checkbox-label"><input type="checkbox" name="is_active" ${employee.is_active?'checked':''}> Active</label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>`, user);
+  const leaveYears = await rows(db, 'SELECT id,name,start_date,end_date FROM leave_years WHERE is_active=1 ORDER BY start_date DESC');
+  const annualType = await row(db, "SELECT id FROM leave_types WHERE code='ANNUAL'");
+  const entitlements = annualType ? await rows(db, 'SELECT leave_year_id,entitlement_hours,adjustment_hours,notes FROM employee_leave_entitlements WHERE employee_id=? AND leave_type_id=?', id, annualType.id) : [];
+  const entitlementMap = new Map(entitlements.map(e => [Number(e.leave_year_id), e]));
+  const leaveSection = leaveYears.length ? `<div class="form-card section-gap"><h2>Annual Leave Entitlement</h2><p class="muted">Enter the authoritative entitlement in hours. Use adjustment for carry-over or exceptional changes.</p><form method="post" action="/employees/${id}/leave-entitlement">${leaveYears.map(y => { const e=entitlementMap.get(Number(y.id))||{}; return `<div class="card section-gap"><strong>${h(y.name)}</strong> <span class="muted">${h(y.start_date)} → ${h(y.end_date)}</span><input type="hidden" name="leave_year_id" value="${y.id}"><label>Entitlement Hours<input type="number" name="entitlement_hours_${y.id}" min="0" step="0.25" value="${h(e.entitlement_hours ?? 0)}"></label><label>Adjustment Hours<input type="number" name="adjustment_hours_${y.id}" step="0.25" value="${h(e.adjustment_hours ?? 0)}"></label><label>Notes<input name="entitlement_notes_${y.id}" maxlength="255" value="${h(e.notes||'')}"></label></div>`; }).join('')}<div class="action-bar"><button type="submit">Save Entitlement</button></div></form></div>` : '<div class="notice section-gap"><strong>No active leave year configured.</strong></div>';
+  return response('Edit Employee', `${pageHeader('Edit Employee','Update identity, team membership and rota settings.')}<div class="form-card"><form method="post" action="/employees/${id}/edit"><label>Display Name<input name="display_name" required value="${h(employee.display_name)}"></label><label>Username<input name="username" required value="${h(employee.username||'')}"></label><label>Email<input name="email" type="email" required value="${h(employee.email||'')}"></label><label>Role<input value="Employee" disabled></label><label>Team<select name="team_id" required>${teamOptions}</select></label><label>Job Title<input name="job_title" value="${h(employee.job_title||'')}"></label><label>Phone<input name="phone" value="${h(employee.phone||'')}"></label><label>Rota Override<select name="override_rota_pattern_id">${patternOptions}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date" value="${h(employee.override_pattern_start_date||'')}"></label><label class="checkbox-label"><input type="checkbox" name="is_active" ${employee.is_active?'checked':''}> Active</label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/employees">Cancel</a></div></form></div>${leaveSection}`, user);
+}
+
+async function saveEntitlement(request, db, user, id) {
+  const scope=teamScope(user);
+  const employee=scope ? await row(db,`SELECT id FROM employees WHERE id=? AND team_id IN ${scope.sql}`,id,...scope.params) : null;
+  if(!employee) return errorPage('This employee is outside your management scope.',user,403);
+  const annualType=await row(db,"SELECT id FROM leave_types WHERE code='ANNUAL'");
+  if(!annualType) return errorPage('Annual Leave is not configured.',user,500);
+  const form=await request.formData();
+  for(const raw of form.getAll('leave_year_id')) {
+    const yearId=Number(raw); if(!yearId) continue;
+    const entitlement=Math.max(0,Number(form.get(`entitlement_hours_${yearId}`))||0);
+    const adjustment=Number(form.get(`adjustment_hours_${yearId}`))||0;
+    const notes=String(form.get(`entitlement_notes_${yearId}`)||'').trim()||null;
+    await db.prepare(`INSERT INTO employee_leave_entitlements (employee_id,leave_year_id,leave_type_id,entitlement_hours,adjustment_hours,notes) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(employee_id,leave_year_id,leave_type_id) DO UPDATE SET entitlement_hours=excluded.entitlement_hours,adjustment_hours=excluded.adjustment_hours,notes=excluded.notes,updated_at=CURRENT_TIMESTAMP`)
+      .bind(id,yearId,annualType.id,entitlement,adjustment,notes).run();
+  }
+  return redirect(request,`/employees/${id}/edit`);
 }
 
 async function saveEmployee(request, db, user, id = null) {
@@ -108,6 +132,8 @@ export async function managerEmployees(request, db, user) {
   const method = request.method.toUpperCase();
   if (method === 'GET' && path === '/employees') return listPage(db, user);
   if (method === 'POST' && path === '/employees') return saveEmployee(request, db, user);
+  const entitlementMatch = path.match(/^\/employees\/(\d+)\/leave-entitlement$/);
+  if (entitlementMatch && method === 'POST') return saveEntitlement(request, db, user, Number(entitlementMatch[1]));
   const match = path.match(/^\/employees\/(\d+)\/edit$/);
   if (match && method === 'GET') return editPage(db, Number(match[1]), user);
   if (match && method === 'POST') return saveEmployee(request, db, user, Number(match[1]));
