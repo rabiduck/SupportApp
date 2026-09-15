@@ -320,6 +320,24 @@ async function editAttendancePage(request,db,user,kind,id){
  return appPage(`Edit ${kind==='absence'?'Absence':'Sickness'}`,'Manager / Team Leader attendance record.',content,user,'Rota',db);
 }
 
+async function shiftOverridePage(request,db,user){
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ const url=new URL(request.url),employee=String(url.searchParams.get('employee')||''),date=String(url.searchParams.get('date')||'');
+ const target=await row(db,'SELECT id,display_name FROM employees WHERE display_name=? AND is_active=1',employee);
+ if(!target||!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Invalid employee or date.',user,400);
+ const existing=await row(db,'SELECT * FROM shift_overrides WHERE employee_id=? AND override_date=? AND is_active=1 ORDER BY id DESC LIMIT 1',target.id,date),shifts=await rows(db,'SELECT id,name,code,start_time,end_time FROM shift_types WHERE is_active=1 ORDER BY is_working_day,start_time,name');
+ if(request.method.toUpperCase()==='POST'){
+  const form=await request.formData(),action=String(form.get('action')||'save');
+  if(action==='remove'&&existing){await db.prepare('UPDATE shift_overrides SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(existing.id).run();await createNotification(db,target.id,'shift_override_removed',`Shift override removed by ${user.display_name}`,date,'/rota');return redirect(request,`/rota?week=${date}`);}
+  const sid=Number(form.get('shift_type_id')),notes=String(form.get('notes')||'').trim()||null;
+  if(existing)await db.prepare('UPDATE shift_overrides SET shift_type_id=?,notes=?,recorded_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(sid,notes,user.id,existing.id).run();
+  else await db.prepare('INSERT INTO shift_overrides(employee_id,override_date,shift_type_id,notes,recorded_by) VALUES(?,?,?,?,?)').bind(target.id,date,sid,notes,user.id).run();
+  const chosen=shifts.find(s=>Number(s.id)===sid);await createNotification(db,target.id,'shift_override',`Shift changed by ${user.display_name}`,`${date} · ${chosen?.name||'Shift updated'}`,'/rota');return redirect(request,`/rota?week=${date}`);
+ }
+ const content=`<div class="form-card"><h2>${existing?'Change':'Add'} Shift Override · ${h(target.display_name)}</h2><p><strong>${h(date)}</strong></p><form method="post"><label>Effective Shift<select name="shift_type_id" required>${shifts.map(s=>`<option value="${s.id}" ${Number(s.id)===Number(existing?.shift_type_id)?'selected':''}>${h(s.name)} (${h(s.code)})${s.start_time?` · ${h(s.start_time)}–${h(s.end_time)}`:''}</option>`).join('')}</select></label><label>Notes <span class="muted">(optional)</span><textarea name="notes" rows="3">${h(existing?.notes||'')}</textarea></label><div class="action-bar"><button name="action" value="save">Save Override</button>${existing?`<button name="action" value="remove" class="secondary" onclick="return confirm('Remove this shift override and restore the rota pattern?')">Remove Override</button>`:''}<a class="button secondary" href="/day?employee=${encodeURIComponent(target.display_name)}&date=${date}">Cancel</a></div></form></div>`;
+ return appPage('Shift Override','Change one day without altering the employee rota pattern.',content,user,'Rota',db);
+}
+
 async function dayActionsPage(request,db,user){
  const url=new URL(request.url),date=String(url.searchParams.get('date')||''),employee=String(url.searchParams.get('employee')||'');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
@@ -331,6 +349,7 @@ async function dayActionsPage(request,db,user){
  const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",target.id,date);
  const absence=await row(db,"SELECT a.*,t.name type_name FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.employee_id=? AND a.is_active=1 AND a.start_date<=? AND a.end_date>=? ORDER BY a.id DESC LIMIT 1",target.id,date,date);
  const sickness=await row(db,"SELECT * FROM sickness WHERE employee_id=? AND is_active=1 AND start_date<=? AND end_date>=? ORDER BY id DESC LIMIT 1",target.id,date,date);
+ const shiftOverride=await row(db,"SELECT o.*,s.name shift_name,s.code shift_code FROM shift_overrides o JOIN shift_types s ON s.id=o.shift_type_id WHERE o.employee_id=? AND o.override_date=? AND o.is_active=1 ORDER BY o.id DESC LIMIT 1",target.id,date);
  let portion=null;if(leave){portion='FULL';if(date===leave.start_date)portion=leave.start_portion||'FULL';if(date===leave.end_date)portion=leave.end_portion||'FULL';}
  if(!own){
    let info=`<div class="card"><h2>${h(target.display_name)}</h2><p><strong>${h(date)}</strong></p>`;
@@ -340,6 +359,7 @@ async function dayActionsPage(request,db,user){
    if(sickness)info+=`<p><strong>Sickness:</strong> ${h(sickness.start_date)}${sickness.end_date!==sickness.start_date?` → ${h(sickness.end_date)}`:''} <a href="/sickness/${sickness.id}/edit">Edit</a></p>`;
    if(!leave&&!wfh&&!absence&&!sickness)info+='<p class="muted">No leave, WFH, absence or sickness activity recorded for this day.</p>';
    info+='</div>';
+   if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Shift</h2>${shiftOverride?`<p><strong>Override:</strong> ${h(shiftOverride.shift_name)} (${h(shiftOverride.shift_code)})</p>`:''}<a class="button secondary" href="/shift-override?employee=${encodeURIComponent(target.display_name)}&date=${date}">${shiftOverride?'Change Override':'Change Shift'}</a></div>`;
    if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Attendance</h2><div class="action-bar"><a class="button" href="/absence/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Absence</a><a class="button secondary" href="/sickness/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Sickness</a></div></div>`;
    if(user.isManager&&user.managedTeamIds.includes(Number(target.team_id))){
      if(leave?.status==='approved')info+=`<div class="card section-gap"><h2>Manager Actions</h2><div class="action-bar"><a class="button secondary" href="/leave-requests/${leave.id}/edit">Modify Employee Leave</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form></div></div>`;
@@ -672,6 +692,7 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/shift-override' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return shiftOverridePage(request,env.DB,user);
       if (/^\/absence\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'absence',Number(path.split('/')[2]));
       if (/^\/sickness\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'sickness',Number(path.split('/')[2]));
       if (path === '/absence/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return recordAttendancePage(request,env.DB,user,'absence');
