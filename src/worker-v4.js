@@ -274,7 +274,13 @@ async function saveEmployee(request, db, auth, id = null) {
       employeeId = result.meta?.last_row_id;
     }
     if (employeeId) await db.prepare('INSERT INTO employee_roles (employee_id,role_id) VALUES (?,?)').bind(employeeId,roleId).run();
-    if (role?.name !== 'Manager') await db.prepare('DELETE FROM team_managers WHERE employee_id=?').bind(employeeId).run();
+    if (role?.name === 'Manager') {
+      // A newly-created/promoted Manager should immediately manage their own team.
+      // Existing additional team assignments are preserved.
+      await db.prepare('INSERT OR IGNORE INTO team_managers (team_id,employee_id) VALUES (?,?)').bind(teamId,employeeId).run();
+    } else {
+      await db.prepare('DELETE FROM team_managers WHERE employee_id=?').bind(employeeId).run();
+    }
     return redirect(request,'/employees');
   } catch (error) {
     const msg = String(error?.message||error);
