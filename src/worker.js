@@ -83,6 +83,8 @@ async function calendarRota(request, db) {
     leaveByEmployee.get(Number(leave.employee_id)).push(leave);
   }
 
+  const overrideRows = await rows(db, `SELECT o.employee_id,o.override_date,s.id shift_type_id,s.code,s.name,s.start_time,s.end_time,s.is_working_day FROM shift_overrides o JOIN shift_types s ON s.id=o.shift_type_id WHERE o.is_active=1 AND o.override_date>=? AND o.override_date<=?`, isoDate(weekStart), weekEnd);
+  const overrideMap = new Map(overrideRows.map(o=>[`${o.employee_id}:${o.override_date}`,o]));
   const absenceRows = await rows(db, `SELECT a.*,t.name type_name,t.code type_code FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.is_active=1 AND a.start_date<=? AND a.end_date>=?`, weekEnd, isoDate(weekStart));
   const sicknessRows = await rows(db, `SELECT * FROM sickness WHERE is_active=1 AND start_date<=? AND end_date>=?`, weekEnd, isoDate(weekStart));
   const absenceMap = new Map(), sicknessMap = new Map();
@@ -97,7 +99,9 @@ async function calendarRota(request, db) {
     lastTeam = e.team_name;
     const cycleWeek = cycleWeekForDate(e.pattern_start_date, Number(e.cycle_length_weeks) || 1, weekStart);
     const cells = dates.map((date, i) => {
-      const shift = shiftMap.get(`${e.pattern_id}:${cycleWeek}:${i}`);
+      const scheduledShift = shiftMap.get(`${e.pattern_id}:${cycleWeek}:${i}`);
+      const overrideShift = overrideMap.get(`${e.id}:${day}`);
+      const shift = overrideShift || scheduledShift;
       const code = shift?.code || 'OFF';
       const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}` : 'Off';
       const day = isoDate(date);
