@@ -44,6 +44,17 @@ a:hover { text-decoration: underline; }
 .side-nav a:hover,
 .side-nav a.active { background: var(--primary-dark); text-decoration: none; }
 .side-nav a.disabled { opacity: .55; pointer-events: none; }
+.side-nav .nav-top { font-weight: 700; }
+.nav-group { margin: 2px 12px; }
+.nav-group-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 12px 10px; border: 0; border-radius: var(--radius); background: transparent; color: white; font: inherit; font-weight: 700; cursor: pointer; text-align: left; }
+.nav-group-toggle:hover { background: rgba(255,255,255,.08); }
+.nav-chevron { font-size: 1.35rem; line-height: 1; transition: transform var(--transition); }
+.nav-group-toggle[aria-expanded="true"] .nav-chevron { transform: rotate(90deg); }
+.nav-children { padding: 0 0 5px 8px; }
+.nav-children[hidden] { display: none; }
+.side-nav .nav-children a { margin: 1px 0; padding: 9px 12px; font-size: .94rem; border-left: 2px solid rgba(255,255,255,.18); border-radius: 0 var(--radius) var(--radius) 0; }
+.side-nav .nav-children a.active { border-left-color: white; }
+
 
 .page { flex: 1; padding: 28px; min-width: 0; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border-dark); }
