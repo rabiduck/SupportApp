@@ -111,6 +111,7 @@ async function calendarRota(request, db) {
       const shift = overrideShift || scheduledShift;
       const code = shift?.code || 'OFF';
       const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}${overrideShift ? ` · override (scheduled ${scheduledShift?.code || 'OFF'})` : ''}` : 'Off';
+      const oncallBadge = oncallFor(e.id,day) ? '<span class="oncall-badge" title="On Call">📱</span>' : '';
       const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
       const absence = absenceMap.get(`${e.id}:${day}`), sick = sicknessMap.get(`${e.id}:${day}`);
@@ -138,7 +139,7 @@ async function calendarRota(request, db) {
           : `${leaveLine}<br>${shiftLine}${wfhLine}`;
         return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}${wfh && portion!=='FULL' ? ` · WFH ${wfh}` : ''}`)}">${display}</td>`;
       }
-      if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong><br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
+      if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong>${oncallBadge}<br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
       return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong>${oncallBadge}</td>`;
     }).join('');
     return `${group}<tr><td class="employee-cell"><strong>${h(e.display_name)}</strong><br><span class="muted">${h(e.pattern_name)} · ${cycleWeek}/${e.cycle_length_weeks}</span></td><td class="team-cell">${h(e.team_name)}</td>${cells}</tr>`;
