@@ -214,14 +214,14 @@ async function editTeamPage(db, id) {
   if (!team) return notFound();
   const departments = await rows(db, 'SELECT id, name FROM departments WHERE is_active=1 OR id=? ORDER BY name', team.department_id);
   const patterns = await rows(db, 'SELECT id, name FROM rota_patterns WHERE is_active=1 OR id=? ORDER BY name', team.default_rota_pattern_id || -1);
-  const content = `${pageHeader('Edit Team', 'Update organisational team details and default rota.')}
+  const content = `${pageHeader('Edit Team', 'Update organisational team details, rota default and manager scope.')}
     <div class="form-card"><form method="post" action="/teams/${id}/edit">
       <label>Team Name<input name="name" required maxlength="100" value="${h(team.name)}"></label>
       <label>Department<select name="department_id" required>${options(departments, team.department_id)}</select></label>
       <label>Description<textarea name="description" rows="3" maxlength="255">${h(team.description || '')}</textarea></label>
       <label>Default Rota Pattern<select name="default_rota_pattern_id" required>${options(patterns, team.default_rota_pattern_id)}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date" value="${h(team.default_pattern_start_date || '')}"></label>
-      <label class="checkbox-label"><input type="checkbox" name="gatekeeper_enabled" ${checked(team.gatekeeper_enabled)}> Gatekeeper rotation enabled</label>
+      <div class="field-group"><div class="field-label">Gatekeeping</div><label class="checkbox-label"><input type="checkbox" name="gatekeeper_enabled" ${checked(team.gatekeeper_enabled)}> Include this team in the Gatekeeper rotation</label></div>
       <label class="checkbox-label"><input type="checkbox" name="is_active" ${checked(team.is_active)}> Active</label>
       <div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/teams">Cancel</a></div>
     </form></div>`;
