@@ -144,6 +144,16 @@ const V15_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='15' WHERE key='schema_version'"
 ];
 
+const V16_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS absence_types (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, code TEXT NOT NULL UNIQUE, is_active INTEGER NOT NULL DEFAULT 1)",
+  "INSERT OR IGNORE INTO absence_types(name,code,is_active) VALUES ('DC','DC',1),('Appointment','APPOINTMENT',1),('Exam','EXAM',1),('Course','COURSE',1),('Client Site','CLIENT_SITE',1),('Other','OTHER',1)",
+  "CREATE TABLE IF NOT EXISTS absences (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, absence_type_id INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, start_portion TEXT NOT NULL DEFAULT 'FULL', end_portion TEXT NOT NULL DEFAULT 'FULL', notes TEXT, recorded_by INTEGER NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_active INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(absence_type_id) REFERENCES absence_types(id), FOREIGN KEY(recorded_by) REFERENCES employees(id))",
+  "CREATE INDEX IF NOT EXISTS idx_absences_employee_dates ON absences(employee_id,start_date,end_date,is_active)",
+  "CREATE TABLE IF NOT EXISTS sickness (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, start_portion TEXT NOT NULL DEFAULT 'FULL', end_portion TEXT NOT NULL DEFAULT 'FULL', notes TEXT, recorded_by INTEGER NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_active INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(recorded_by) REFERENCES employees(id))",
+  "CREATE INDEX IF NOT EXISTS idx_sickness_employee_dates ON sickness(employee_id,start_date,end_date,is_active)",
+  "UPDATE app_meta SET value='16' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -178,5 +188,6 @@ export async function ensureSchema(db) {
   if (version < 12) { await applyStatements(db, V12_SCHEMA_STATEMENTS); version = 12; }
   if (version < 13) { await applyStatements(db, V13_SCHEMA_STATEMENTS, true); version = 13; }
   if (version < 14) { await applyStatements(db, V14_SCHEMA_STATEMENTS); version = 14; }
-  if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); }
+  if (version < 15) { await applyStatements(db, V15_SCHEMA_STATEMENTS); version = 15; }
+  if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); }
 }
