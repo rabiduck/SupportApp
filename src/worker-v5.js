@@ -218,30 +218,39 @@ async function myLeavePage(request, db, user) {
     const startDate = String(form.get('start_date') || '').trim();
     const endDate = String(form.get('end_date') || '').trim();
     const notes = String(form.get('employee_notes') || '').trim() || null;
+    const startPortion = String(form.get('start_portion') || 'FULL').toUpperCase();
+    const endPortion = String(form.get('end_portion') || 'FULL').toUpperCase();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
       message = 'Start and end dates are required.';
     } else if (endDate < startDate) {
       message = 'End date cannot be before start date.';
+    } else if (!['FULL','AM','PM'].includes(startPortion) || !['FULL','AM','PM'].includes(endPortion)) {
+      message = 'Choose a valid full-day or half-day option.';
+    } else if (startDate === endDate && startPortion !== 'FULL' && endPortion !== 'FULL' && startPortion !== endPortion) {
+      message = 'For a single-day request choose Full Day, AM or PM consistently.';
     } else {
-      const created = await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,status,employee_notes) VALUES (?,?,?,'pending',?)").bind(user.id,startDate,endDate,notes).run();
+      const effectiveEndPortion = startDate === endDate ? startPortion : endPortion;
+      const created = await db.prepare("INSERT INTO leave_requests (employee_id,start_date,end_date,start_portion,end_portion,status,employee_notes) VALUES (?,?,?,?,?,'pending',?)").bind(user.id,startDate,endDate,startPortion,effectiveEndPortion,notes).run();
       const leaveId = Number(created.meta?.last_row_id);
       const managers = await rows(db, `SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id LEFT JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND (r.name='SystemAdmin' OR (r.name='Manager' AND tm.team_id=?)) AND e.id<>?`, user.team_id,user.id);
-      for (const manager of managers) await createNotification(db, manager.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate}${endDate!==startDate?` → ${endDate}`:''}`, `/leave-requests/${leaveId}`);
+      for (const manager of managers) await createNotification(db, manager.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate} ${startPortion}${endDate!==startDate?` → ${endDate} ${effectiveEndPortion}`:''}`, `/leave-requests/${leaveId}`);
       return redirect(request, '/leave');
     }
   }
 
   const requests = await rows(db, `SELECT lr.*, reviewer.display_name AS reviewer_name FROM leave_requests lr LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.employee_id=? ORDER BY lr.requested_at DESC,lr.id DESC`, user.id);
-  const table = requests.length ? `<table><thead><tr><th>Dates</th><th>Status</th><th>Notes</th><th>Requested</th><th>Reviewed By</th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.start_date)}</strong>${r.end_date !== r.start_date ? ` → <strong>${h(r.end_date)}</strong>` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td>${h(String(r.requested_at || '').slice(0,16).replace('T',' '))}</td><td>${h(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">You have not submitted any annual leave requests yet.</div>';
-  const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>End Date<input name="end_date" type="date" required></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
+  const portionLabel = p => p === 'AM' ? 'AM' : p === 'PM' ? 'PM' : 'Full Day';
+  const requestDates = r => r.start_date === r.end_date ? `${h(r.start_date)} <span class="muted">(${portionLabel(r.start_portion)})</span>` : `${h(r.start_date)} <span class="muted">(${portionLabel(r.start_portion)})</span> → ${h(r.end_date)} <span class="muted">(${portionLabel(r.end_portion)})</span>`;
+  const table = requests.length ? `<table><thead><tr><th>Dates</th><th>Status</th><th>Notes</th><th>Requested</th><th>Reviewed By</th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${requestDates(r)}</strong></td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td>${h(String(r.requested_at || '').slice(0,16).replace('T',' '))}</td><td>${h(r.reviewer_name || '—')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">You have not submitted any annual leave requests yet.</div>';
+  const content = `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card"><h2>Request Annual Leave</h2><form method="post" action="/leave"><label>Start Date<input name="start_date" type="date" required></label><label>Start Portion<select name="start_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>End Date<input name="end_date" type="date" required></label><label>End Portion<select name="end_portion"><option value="FULL">Full Day</option><option value="AM">AM (Half Day)</option><option value="PM">PM (Half Day)</option></select></label><label>Notes <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Submit Request</button></div></form></div><div class="table-card section-gap"><h2>My Requests</h2>${table}</div>`;
   return appPage('My Leave', 'Request annual leave and track the status of your requests.', content, user, 'My Leave', db);
 }
 
 async function leaveRequestsPage(request, db, user) {
   const scopeSql = ` AND e.team_id IN (${user.managedTeamIds.map(() => '?').join(',') || 'NULL'})`;
   const scopeParams = user.managedTeamIds;
-  const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scopeSql} ORDER BY CASE lr.status WHEN 'pending' THEN 0 ELSE 1 END,lr.start_date,lr.requested_at`, ...scopeParams);
-  const table = requests.length ? `<table><thead><tr><th>Employee</th><th>Team</th><th>Dates</th><th>Status</th><th>Employee Note</th><th></th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.start_date)}${r.end_date !== r.start_date ? ` → ${h(r.end_date)}` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td><a class="button secondary" href="/leave-requests/${r.id}">${r.status === 'pending' ? 'Review' : 'View'}</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">There are no leave requests in your management scope.</div>';
+  const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.start_portion,lr.end_portion,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scopeSql} ORDER BY CASE lr.status WHEN 'pending' THEN 0 ELSE 1 END,lr.start_date,lr.requested_at`, ...scopeParams);
+  const table = requests.length ? `<table><thead><tr><th>Employee</th><th>Team</th><th>Dates</th><th>Status</th><th>Employee Note</th><th></th></tr></thead><tbody>${requests.map((r) => `<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.start_date)} ${h(r.start_portion==='FULL'?'Full Day':r.start_portion)}${r.end_date !== r.start_date ? ` → ${h(r.end_date)} ${h(r.end_portion==='FULL'?'Full Day':r.end_portion)}` : ''}</td><td>${leaveStatus(r.status)}</td><td>${h(r.employee_notes || '—')}</td><td><a class="button secondary" href="/leave-requests/${r.id}">${r.status === 'pending' ? 'Review' : 'View'}</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">There are no leave requests in your management scope.</div>';
   return appPage('Leave Requests', 'Review annual leave requests for employees in your managed teams.', `<div class="table-card">${table}</div>`, user, 'Leave Requests', db);
 }
 
@@ -258,7 +267,7 @@ async function leaveRequestReviewPage(request, db, user, id) {
     if (!['approved','rejected'].includes(decision)) return accessPage('Invalid decision', 'Choose Approve or Reject.', 400);
     await db.prepare('UPDATE leave_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status=\'pending\'').bind(decision,user.id,notes,id).run();
     const verb = decision === 'approved' ? 'approved' : 'rejected';
-    await createNotification(db, item.employee_id, 'leave_review', `Annual leave ${verb}`, `${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}${notes?` · ${notes}`:''}`, '/leave');
+    await createNotification(db, item.employee_id, 'leave_review', `Annual leave ${verb}`, `${item.start_date} ${item.start_portion||'FULL'}${item.end_date!==item.start_date?` → ${item.end_date} ${item.end_portion||'FULL'}`:''}${notes?` · ${notes}`:''}`, '/leave');
     return redirect(request, '/leave-requests');
   }
 
@@ -270,11 +279,14 @@ async function leaveRequestReviewPage(request, db, user, id) {
     let week=1;
     if(item.pattern_start_date && Number(item.cycle_length_weeks)>0){const ps=new Date(`${item.pattern_start_date}T00:00:00Z`); const dw=Math.floor((d-ps)/(7*86400000)); week=((dw%Number(item.cycle_length_weeks))+Number(item.cycle_length_weeks))%Number(item.cycle_length_weeks)+1;}
     const dow=(d.getUTCDay()+6)%7; const shift=amap.get(`${week}:${dow}`);
-    rotaDays.push({date:d.toISOString().slice(0,10),shift:shift?.code||'OFF',working:Boolean(shift?.is_working_day)});
+    const day=d.toISOString().slice(0,10); let portion='FULL';
+    if(day===item.start_date) portion=item.start_portion||'FULL';
+    if(day===item.end_date) portion=item.end_portion||'FULL';
+    rotaDays.push({date:day,shift:shift?.code||'OFF',working:Boolean(shift?.is_working_day),portion});
   }
-  const rotaTable = `<table><thead><tr><th>Date</th><th>Scheduled Shift</th><th>Leave Impact</th></tr></thead><tbody>${rotaDays.map((d)=>`<tr><td>${h(d.date)}</td><td>${h(d.shift)}</td><td>${d.working?'Working day → Leave':'Non-working day'}</td></tr>`).join('')}</tbody></table>`;
+  const rotaTable = `<table><thead><tr><th>Date</th><th>Scheduled Shift</th><th>Leave Impact</th></tr></thead><tbody>${rotaDays.map((d)=>`<tr><td>${h(d.date)}</td><td>${h(d.shift)}</td><td>${d.working?`Working day → ${d.portion==='FULL'?'Full Day':d.portion+' Half Day'} Leave`:'Non-working day'}</td></tr>`).join('')}</tbody></table>`;
   const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>`;
-  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)}${item.end_date!==item.start_date?` → ${h(item.end_date)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div><div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
+  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div><div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
 
