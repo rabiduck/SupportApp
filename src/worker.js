@@ -99,12 +99,12 @@ async function calendarRota(request, db) {
     lastTeam = e.team_name;
     const cycleWeek = cycleWeekForDate(e.pattern_start_date, Number(e.cycle_length_weeks) || 1, weekStart);
     const cells = dates.map((date, i) => {
+      const day = isoDate(date);
       const scheduledShift = shiftMap.get(`${e.pattern_id}:${cycleWeek}:${i}`);
       const overrideShift = overrideMap.get(`${e.id}:${day}`);
       const shift = overrideShift || scheduledShift;
       const code = shift?.code || 'OFF';
-      const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}` : 'Off';
-      const day = isoDate(date);
+      const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}${overrideShift ? ` · override (scheduled ${scheduledShift?.code || 'OFF'})` : ''}` : 'Off';
       const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
       const absence = absenceMap.get(`${e.id}:${day}`), sick = sicknessMap.get(`${e.id}:${day}`);
