@@ -73,7 +73,7 @@ async function calendarRota(request, db) {
   const shiftMap = new Map();
   for (const a of assignments) shiftMap.set(`${a.rota_pattern_id}:${a.week_number}:${a.day_of_week}`, a);
 
-  // Approved leave is an overlay: the underlying generated shift remains unchanged.
+  // Approved leave and WFH are overlays: the underlying generated shift remains unchanged.
   const weekEnd = isoDate(dates[6]);
   const leaveRows = await rows(db, `SELECT employee_id,start_date,end_date,start_portion,end_portion FROM leave_requests
     WHERE status='approved' AND start_date<=? AND end_date>=?`, weekEnd, isoDate(weekStart));
@@ -83,6 +83,8 @@ async function calendarRota(request, db) {
     leaveByEmployee.get(Number(leave.employee_id)).push(leave);
   }
 
+  const wfhRows = await rows(db, `SELECT employee_id,request_date,status FROM wfh_requests WHERE request_date>=? AND request_date<=? AND status IN ('pending','approved')`, isoDate(weekStart), weekEnd);
+  const wfhMap = new Map(wfhRows.map(x => [`${x.employee_id}:${x.request_date}`, x.status]));
   const today = isoDate(new Date());
   let lastTeam = null;
   const body = employees.map((e) => {
@@ -110,6 +112,8 @@ async function calendarRota(request, db) {
           : `${leaveLine}<br>${shiftLine}`;
         return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}`)}">${display}</td>`;
       }
+      const wfh = wfhMap.get(`${e.id}:${day}`);
+      if (wfh && shift?.is_working_day) return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)} · WFH ${wfh}"><strong>${h(code)}</strong><br><strong>WFH${wfh==='pending'?' REQUESTED':''}</strong></td>`;
       return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
     }).join('');
     return `${group}<tr><td class="employee-cell"><strong>${h(e.display_name)}</strong><br><span class="muted">${h(e.pattern_name)} · ${cycleWeek}/${e.cycle_length_weeks}</span></td><td class="team-cell">${h(e.team_name)}</td>${cells}</tr>`;
@@ -127,7 +131,14 @@ async function calendarRota(request, db) {
   </div>
   ${table}
   <div class="notice section-gap">Shifts are calculated from each employee's rota pattern. Approved annual leave overlays scheduled working days without changing the underlying pattern.</div>`;
-  return new Response(shell(content), { headers: { 'content-type': 'text/html; charset=UTF-8' } });
+  return new Response(shell(content+`<script>
+  document.querySelectorAll('.rota-cell').forEach(td=>td.addEventListener('click',()=>{
+    const tr=td.closest('tr'), idx=[...tr.children].indexOf(td)-2;
+    if(idx<0)return;
+    const name=tr.querySelector('.employee-cell strong')?.textContent, date=${JSON.stringify(dates.map(isoDate))}[idx];
+    if(name&&date) location.href='/wfh/request?employee='+encodeURIComponent(name)+'&date='+date;
+  }));
+  </script>`), { headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
 export default {
