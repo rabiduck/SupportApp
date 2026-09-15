@@ -115,15 +115,16 @@ async function enrichUser(db, employee) {
 
 function nav(user, active = '') {
   const links = user.isSystemAdmin
-    ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],...(user.isManager ? [['Leave Requests','/leave-requests']] : []),['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
+    ? [['Dashboard','/'],['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave'],...(user.isManager ? [['Leave Requests','/leave-requests']] : []),['Teams','/teams'],['Employees','/employees'],['Shift Patterns','/shift-patterns'],['Administration','/administration']]
     : user.isManager
       ? [['Dashboard','/'],['Rota','/rota'],['My Leave','/leave'],['Leave Requests','/leave-requests'],['Employees','/employees'],['Shift Patterns','/shift-patterns']]
-      : [['Rota','/rota'],['My Leave','/leave']];
+      : [['Rota','/rota'],['On Call','/on-call'],['My Leave','/leave']];
   return links.map(([name, href]) => `<a class="${active === name ? 'active' : ''}" href="${href}">${name}</a>`).join('');
 }
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
+  if (path.startsWith('/on-call')) return 'On Call';
   if (path.startsWith('/rota')) return 'Rota';
   if (path.startsWith('/leave-requests')) return 'Leave Requests';
   if (path.startsWith('/leave')) return 'My Leave';
@@ -274,6 +275,32 @@ function balanceCard(b) {
   const n=v=>Number(v||0).toFixed(1);
   const warning=b.remaining<0?`<div class="notice section-gap"><strong>⚠ Negative leave balance: ${n(b.remaining)} days</strong><br>Approved leave exceeds the current entitlement. This is advisory and does not prevent further requests or approvals.</div>`:'';
   return `<div class="card"><h2>Annual Leave · ${h(b.year.name)}</h2><p><strong>Entitlement:</strong> ${n(b.entitlement)} days &nbsp; <strong>Adjustment:</strong> ${b.adjustment>=0?'+':''}${n(b.adjustment)} &nbsp; <strong>Taken:</strong> ${n(b.taken)} &nbsp; <strong>Booked:</strong> ${n(b.booked)} &nbsp; <strong>Pending:</strong> ${n(b.pending)} &nbsp; <strong>Remaining:</strong> ${n(b.remaining)} days</p></div>${warning}`;
+}
+
+function fridayFor(dateText){const d=new Date(dateText+'T12:00:00Z'),day=d.getUTCDay(),delta=(day-5+7)%7;d.setUTCDate(d.getUTCDate()-delta);return d.toISOString().slice(0,10);}
+async function onCallMembers(db){return rows(db,`SELECT m.*,e.display_name,e.team_id FROM oncall_members m JOIN employees e ON e.id=m.employee_id WHERE m.is_active=1 AND e.is_active=1 ORDER BY m.display_order,m.id`);}
+async function onCallBaseFor(db,dateText){
+ const members=await onCallMembers(db),settings=await row(db,'SELECT * FROM oncall_settings WHERE id=1');if(!members.length||!settings?.anchor_friday)return null;
+ const friday=fridayFor(dateText),weeks=Math.floor((new Date(friday+'T12:00:00Z')-new Date(settings.anchor_friday+'T12:00:00Z'))/604800000),anchor=Math.max(0,members.findIndex(m=>Number(m.id)===Number(settings.anchor_member_id))),idx=((anchor+weeks)%members.length+members.length)%members.length;return {member:members[idx],friday};
+}
+async function onCallEffectiveFor(db,dateText){const ov=await row(db,'SELECT o.*,e.display_name FROM oncall_overrides o JOIN employees e ON e.id=o.employee_id WHERE o.is_active=1 AND o.start_date<=? AND o.end_date>=? ORDER BY o.id DESC LIMIT 1',dateText,dateText);if(ov)return {employee_id:ov.employee_id,display_name:ov.display_name,source:ov.source};const b=await onCallBaseFor(db,dateText);return b?{employee_id:b.member.employee_id,display_name:b.member.display_name,source:'rotation'}:null;}
+async function onCallPage(request,db,user){
+ const url=new URL(request.url),focus=String(url.searchParams.get('week')||new Date().toISOString().slice(0,10)),baseFriday=fridayFor(focus),members=await onCallMembers(db),settings=await row(db,'SELECT * FROM oncall_settings WHERE id=1');
+ const weeks=[];for(let x=-2;x<=8;x++){const d=new Date(baseFriday+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+x*7);const fri=d.toISOString().slice(0,10),thu=new Date(d);thu.setUTCDate(thu.getUTCDate()+6);const eff=await onCallEffectiveFor(db,fri);weeks.push({fri,thu:thu.toISOString().slice(0,10),eff});}
+ let manage='';if(user.isManager||user.isTeamLeader){const employees=await rows(db,'SELECT id,display_name FROM employees WHERE is_active=1 ORDER BY display_name');manage=`<div class="card section-gap"><h2>On Call Engineers</h2><table><thead><tr><th>Order</th><th>Engineer</th><th></th></tr></thead><tbody>${members.map((m,i)=>`<tr><td>${i+1}</td><td>${h(m.display_name)}</td><td><form method="post" action="/on-call/member/${m.id}/remove"><button class="secondary">Remove</button></form></td></tr>`).join('')}</tbody></table><form method="post" action="/on-call/member/add" class="section-gap"><label>Add Engineer<select name="employee_id">${employees.filter(e=>!members.some(m=>Number(m.employee_id)===Number(e.id))).map(e=>`<option value="${e.id}">${h(e.display_name)}</option>`).join('')}</select></label><button>Add Engineer</button></form><form method="post" action="/on-call/anchor" class="section-gap"><h3>Rotation Anchor</h3><label>Friday<input type="date" name="anchor_friday" value="${h(settings?.anchor_friday||baseFriday)}" required></label><label>Engineer<select name="anchor_member_id">${members.map(m=>`<option value="${m.id}" ${Number(m.id)===Number(settings?.anchor_member_id)?'selected':''}>${h(m.display_name)}</option>`).join('')}</select></label><button>Save Anchor</button></form></div>`;}
+ const table=`<table><thead><tr><th>On Call Week</th><th>Engineer</th><th></th></tr></thead><tbody>${weeks.map(w=>`<tr><td><strong>${w.fri}</strong> → ${w.thu}</td><td>${w.eff?h(w.eff.display_name):'<span class="muted">Not configured</span>'}</td><td>${w.eff&&Number(w.eff.employee_id)===Number(user.id)?`<a class="button secondary" href="/on-call/cover?date=${w.fri}&scope=week">Request Cover</a>`:''}${(user.isManager||user.isTeamLeader)&&w.eff?` <a class="button secondary" href="/on-call/override?date=${w.fri}&scope=week">Override</a>`:''}</td></tr>`).join('')}</tbody></table>`;
+ return appPage('On Call','Friday–Thursday support cover.',`<div class="table-card">${table}</div>${manage}`,user,'On Call',db);
+}
+async function onCallMemberAction(request,db,user,action,id){
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ if(action==='add'){const form=await request.formData(),eid=Number(form.get('employee_id')),max=Number((await row(db,'SELECT COALESCE(MAX(display_order),0) m FROM oncall_members WHERE is_active=1'))?.m||0);await db.prepare('INSERT INTO oncall_members(employee_id,display_order,is_active) VALUES(?,?,1) ON CONFLICT(employee_id) DO UPDATE SET is_active=1,removed_at=NULL,display_order=excluded.display_order').bind(eid,max+1).run();}
+ else await db.prepare('UPDATE oncall_members SET is_active=0,removed_at=CURRENT_TIMESTAMP WHERE id=?').bind(id).run();return redirect(request,'/on-call');
+}
+async function onCallAnchor(request,db,user){if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const f=await request.formData();await db.prepare('UPDATE oncall_settings SET anchor_friday=?,anchor_member_id=? WHERE id=1').bind(String(f.get('anchor_friday')),Number(f.get('anchor_member_id'))).run();return redirect(request,'/on-call');}
+async function onCallOverridePage(request,db,user){
+ if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const url=new URL(request.url),date=String(url.searchParams.get('date')||''),scope=String(url.searchParams.get('scope')||'day'),members=await onCallMembers(db),start=scope==='week'?fridayFor(date):date,end=scope==='week'?(()=>{const d=new Date(start+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+6);return d.toISOString().slice(0,10)})():date;
+ if(request.method.toUpperCase()==='POST'){const f=await request.formData(),eid=Number(f.get('employee_id')),notes=String(f.get('notes')||'').trim()||null;await db.prepare("INSERT INTO oncall_overrides(start_date,end_date,employee_id,source,notes,recorded_by) VALUES(?,?,?,'manager',?,?)").bind(start,end,eid,notes,user.id).run();await createNotification(db,eid,'oncall_override',`On-call assigned by ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,'/on-call');return redirect(request,`/on-call?week=${start}`);}
+ return appPage('Override On Call',scope==='week'?'Override the complete Friday–Thursday period.':'Override one day.',`<div class="form-card"><form method="post"><p><strong>${start}${end!==start?` → ${end}`:''}</strong></p><label>Engineer<select name="employee_id">${members.map(m=>`<option value="${m.employee_id}">${h(m.display_name)}</option>`).join('')}</select></label><label>Notes<textarea name="notes" rows="3"></textarea></label><button>Apply Override</button></form></div>`,user,'On Call',db);
 }
 
 async function recordAttendancePage(request,db,user,kind){
@@ -692,6 +719,11 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path==='/on-call' && request.method.toUpperCase()==='GET') return onCallPage(request,env.DB,user);
+      if (path==='/on-call/member/add' && request.method.toUpperCase()==='POST') return onCallMemberAction(request,env.DB,user,'add');
+      if (/^\/on-call\/member\/\d+\/remove$/.test(path) && request.method.toUpperCase()==='POST') return onCallMemberAction(request,env.DB,user,'remove',Number(path.split('/')[3]));
+      if (path==='/on-call/anchor' && request.method.toUpperCase()==='POST') return onCallAnchor(request,env.DB,user);
+      if (path==='/on-call/override' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return onCallOverridePage(request,env.DB,user);
       if (path === '/shift-override' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return shiftOverridePage(request,env.DB,user);
       if (/^\/absence\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'absence',Number(path.split('/')[2]));
       if (/^\/sickness\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return editAttendancePage(request,env.DB,user,'sickness',Number(path.split('/')[2]));
