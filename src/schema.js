@@ -95,6 +95,13 @@ const V8_SCHEMA_STATEMENTS = [
   "UPDATE app_meta SET value='8' WHERE key='schema_version'"
 ];
 
+const V9_SCHEMA_STATEMENTS = [
+  "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, recipient_employee_id INTEGER NOT NULL, notification_type TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, target_url TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, read_at TEXT, FOREIGN KEY (recipient_employee_id) REFERENCES employees(id) ON DELETE CASCADE)",
+  "CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_employee_id,created_at)",
+  "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(recipient_employee_id,read_at)",
+  "UPDATE app_meta SET value='9' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -122,5 +129,6 @@ export async function ensureSchema(db) {
   if (version < 5) { await applyStatements(db, V5_SCHEMA_STATEMENTS); version = 5; }
   if (version < 6) { await applyStatements(db, V6_SCHEMA_STATEMENTS); version = 6; }
   if (version < 7) { await applyStatements(db, V7_SCHEMA_STATEMENTS); version = 7; }
-  if (version < 8) { await applyStatements(db, V8_SCHEMA_STATEMENTS); }
+  if (version < 8) { await applyStatements(db, V8_SCHEMA_STATEMENTS); version = 8; }
+  if (version < 9) { await applyStatements(db, V9_SCHEMA_STATEMENTS); }
 }
