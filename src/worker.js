@@ -74,7 +74,7 @@ async function calendarRota(request, db) {
 
   // Approved leave is an overlay: the underlying generated shift remains unchanged.
   const weekEnd = isoDate(dates[6]);
-  const leaveRows = await rows(db, `SELECT employee_id,start_date,end_date FROM leave_requests
+  const leaveRows = await rows(db, `SELECT employee_id,start_date,end_date,start_portion,end_portion FROM leave_requests
     WHERE status='approved' AND start_date<=? AND end_date>=?`, weekEnd, isoDate(weekStart));
   const leaveByEmployee = new Map();
   for (const leave of leaveRows) {
@@ -93,10 +93,15 @@ async function calendarRota(request, db) {
       const code = shift?.code || 'OFF';
       const title = shift ? `${shift.name}${shift.start_time ? ` ${shift.start_time}–${shift.end_time}` : ''}` : 'Off';
       const day = isoDate(date);
-      const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).some((leave) => leave.start_date <= day && leave.end_date >= day);
+      const approvedLeave = (leaveByEmployee.get(Number(e.id)) || []).find((leave) => leave.start_date <= day && leave.end_date >= day);
       // Leave only replaces a scheduled working shift; OFF remains OFF.
       if (approvedLeave && shift?.is_working_day) {
-        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`Annual Leave · scheduled ${code}`)}"><strong>LEAVE</strong></td>`;
+        let portion = 'FULL';
+        if (day === approvedLeave.start_date) portion = approvedLeave.start_portion || 'FULL';
+        if (day === approvedLeave.end_date) portion = approvedLeave.end_portion || 'FULL';
+        const label = portion === 'FULL' ? 'LEAVE' : `LEAVE ${portion}`;
+        const detail = portion === 'FULL' ? 'Annual Leave' : `Annual Leave · ${portion} half day`;
+        return `<td class="rota-cell shift-leave ${day === today ? 'today' : ''}" title="${h(`${detail} · scheduled ${code}`)}"><strong>${h(label)}</strong></td>`;
       }
       return `<td class="rota-cell shift-${h(code).toLowerCase()} ${day === today ? 'today' : ''}" title="${h(title)}"><strong>${h(code)}</strong></td>`;
     }).join('');
