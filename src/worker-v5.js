@@ -809,7 +809,10 @@ export default {
         return decorateResponse(new Response(html,{status:base.status,headers:base.headers}),user,path,localAuth,env.DB);
       }
       if (user.isSystemAdmin && /^\/teams\/\d+\/edit$/.test(path) && request.method.toUpperCase()==='POST') {
-        const clone=request.clone(),form=await clone.formData(),enabled=form.has('gatekeeper_enabled')?1:0,id=Number(path.split('/')[2]),base=await appWorker.fetch(requestForApp,{...env,AUTH_REQUIRED:'true'});await env.DB.prepare('UPDATE teams SET gatekeeper_enabled=? WHERE id=?').bind(enabled,id).run();return decorateResponse(base,user,path,localAuth,env.DB);
+        const form=await request.clone().formData(),enabled=form.has('gatekeeper_enabled')?1:0,id=Number(path.split('/')[2]);
+        const base=await appWorker.fetch(requestForApp,{...env,AUTH_REQUIRED:'true'});
+        await env.DB.prepare('UPDATE teams SET gatekeeper_enabled=? WHERE id=?').bind(enabled,id).run();
+        return base;
       }
 
       if (user.isManager && !user.isSystemAdmin) {
