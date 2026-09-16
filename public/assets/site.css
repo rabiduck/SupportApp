@@ -226,3 +226,11 @@ button.compact { min-width:44px; width:44px; padding:0; }
 .management-assessment-table td:nth-child(n+2){text-align:center}
 .management-assessment-table th:nth-child(n+2){text-align:center}
 .management-assessment-table select{width:96px;min-width:96px;max-width:96px;margin:0 auto}
+.pdp-cycle-filter form{display:flex;align-items:end;gap:12px}
+.pdp-cycle-filter label{flex:1;max-width:440px;margin:0}
+.pdp-cycle-filter select{margin-top:4px}
+.management-questions{margin-top:16px}
+.question-answer{padding:12px 0;border-top:1px solid var(--border)}
+.question-answer:first-of-type{border-top:0}
+.question-answer h3{margin:0 0 8px;font-size:1rem}
+.question-answer-text{margin:0;white-space:pre-wrap}
