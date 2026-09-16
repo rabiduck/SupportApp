@@ -208,6 +208,12 @@ const V21_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='21' WHERE key='schema_version'"
 ];
 
+const V23_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS pdp_cycle_questions (id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id INTEGER NOT NULL, question_text TEXT NOT NULL, display_order INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE)",
+ "CREATE TABLE IF NOT EXISTS pdp_question_responses (id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, question_id INTEGER NOT NULL, response_text TEXT, updated_at TEXT, UNIQUE(cycle_id,employee_id,question_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE, FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(question_id) REFERENCES pdp_cycle_questions(id) ON DELETE CASCADE)",
+ "UPDATE app_meta SET value='23' WHERE key='schema_version'"
+];
+
 const V22_SCHEMA_STATEMENTS = [
  "CREATE TABLE IF NOT EXISTS pdp_cycle_matrix_links (cycle_id INTEGER NOT NULL, matrix_id INTEGER NOT NULL, PRIMARY KEY(cycle_id,matrix_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE, FOREIGN KEY(matrix_id) REFERENCES pdp_matrices(id))",
  "UPDATE app_meta SET value='22' WHERE key='schema_version'"
@@ -254,5 +260,6 @@ export async function ensureSchema(db) {
   if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); version = 19; }
   if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); version = 20; }
   if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); version = 21; }
-  if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); }
+  if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); version = 22; }
+  if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); }
 }
