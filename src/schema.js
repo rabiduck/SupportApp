@@ -200,6 +200,14 @@ const V20_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='20' WHERE key='schema_version'"
 ];
 
+
+const V21_SCHEMA_STATEMENTS = [
+ "ALTER TABLE pdp_cycles ADD COLUMN source_matrix_id INTEGER",
+ "ALTER TABLE pdp_cycles ADD COLUMN ability_scale_snapshot TEXT",
+ "CREATE TABLE IF NOT EXISTS pdp_cycle_participants (cycle_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'not_started', included_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, submitted_at TEXT, PRIMARY KEY(cycle_id,employee_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE, FOREIGN KEY(employee_id) REFERENCES employees(id))",
+ "UPDATE app_meta SET value='21' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -239,5 +247,6 @@ export async function ensureSchema(db) {
   if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); version = 17; }
   if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); version = 18; }
   if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); version = 19; }
-  if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); }
+  if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); version = 20; }
+  if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); }
 }
