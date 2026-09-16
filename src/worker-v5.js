@@ -1087,11 +1087,15 @@ async function leaveRequestReviewPage(request, db, user, id) {
     rotaDays.push({date:day,shift:shift?.code||'OFF',working:Boolean(shift?.is_working_day),portion});
   }
   const rotaTable = `<table><thead><tr><th>Date</th><th>Scheduled Shift</th><th>Leave Impact</th></tr></thead><tbody>${rotaDays.map((d)=>`<tr><td>${h(d.date)}</td><td>${h(d.shift)}</td><td>${d.working?`Working day → ${d.portion==='FULL'?'Full Day':d.portion+' Half Day'} Leave`:'Non-working day'}</td></tr>`).join('')}</tbody></table>`;
+  const overlayStartDate=new Date(start),overlayEndDate=new Date(end);
+  overlayStartDate.setUTCDate(overlayStartDate.getUTCDate()-((overlayStartDate.getUTCDay()+6)%7));
+  overlayEndDate.setUTCDate(overlayEndDate.getUTCDate()+(6-((overlayEndDate.getUTCDay()+6)%7)));
+  const overlayStart=overlayStartDate.toISOString().slice(0,10),overlayEnd=overlayEndDate.toISOString().slice(0,10),overlayWeeks=Math.round((overlayEndDate-overlayStartDate)/(7*86400000))+1;
   const [existingLeave,wfhOverlays,absenceOverlays,sicknessOverlays] = await Promise.all([
-    rows(db,"SELECT id,start_date,end_date,start_portion,end_portion,status FROM leave_requests WHERE employee_id=? AND id<>? AND status IN ('pending','approved') AND start_date<=? AND end_date>=? ORDER BY start_date,id",item.employee_id,id,item.end_date,item.start_date),
-    rows(db,"SELECT id,request_date,status FROM wfh_requests WHERE employee_id=? AND status IN ('pending','approved') AND request_date>=? AND request_date<=? ORDER BY request_date,id",item.employee_id,item.start_date,item.end_date),
-    rows(db,'SELECT a.id,a.start_date,a.end_date,a.start_portion,a.end_portion,t.name type_name FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.employee_id=? AND a.is_active=1 AND a.start_date<=? AND a.end_date>=? ORDER BY a.start_date,a.id',item.employee_id,item.end_date,item.start_date),
-    rows(db,'SELECT id,start_date,end_date,start_portion,end_portion FROM sickness WHERE employee_id=? AND is_active=1 AND start_date<=? AND end_date>=? ORDER BY start_date,id',item.employee_id,item.end_date,item.start_date)
+    rows(db,"SELECT id,start_date,end_date,start_portion,end_portion,status FROM leave_requests WHERE employee_id=? AND id<>? AND status IN ('pending','approved') AND start_date<=? AND end_date>=? ORDER BY start_date,id",item.employee_id,id,overlayEnd,overlayStart),
+    rows(db,"SELECT id,request_date,status FROM wfh_requests WHERE employee_id=? AND status IN ('pending','approved') AND request_date>=? AND request_date<=? ORDER BY request_date,id",item.employee_id,overlayStart,overlayEnd),
+    rows(db,'SELECT a.id,a.start_date,a.end_date,a.start_portion,a.end_portion,t.name type_name FROM absences a JOIN absence_types t ON t.id=a.absence_type_id WHERE a.employee_id=? AND a.is_active=1 AND a.start_date<=? AND a.end_date>=? ORDER BY a.start_date,a.id',item.employee_id,overlayEnd,overlayStart),
+    rows(db,'SELECT id,start_date,end_date,start_portion,end_portion FROM sickness WHERE employee_id=? AND is_active=1 AND start_date<=? AND end_date>=? ORDER BY start_date,id',item.employee_id,overlayEnd,overlayStart)
   ]);
   const overlayRange=(startDate,endDate,startPortion='FULL',endPortion='FULL')=>`${h(startDate)} ${h(startPortion==='FULL'?'Full Day':startPortion)}${endDate!==startDate?` → ${h(endDate)} ${h(endPortion==='FULL'?'Full Day':endPortion)}`:''}`;
   const overlays=[
@@ -1100,8 +1104,8 @@ async function leaveRequestReviewPage(request, db, user, id) {
     ...absenceOverlays.map(x=>({date:x.start_date,type:'Absence · '+x.type_name,period:overlayRange(x.start_date,x.end_date,x.start_portion,x.end_portion),detail:'Active',href:'/absence/'+x.id+'/edit'})),
     ...sicknessOverlays.map(x=>({date:x.start_date,type:'Sickness',period:overlayRange(x.start_date,x.end_date,x.start_portion,x.end_portion),detail:'Active',href:'/sickness/'+x.id+'/edit'}))
   ].sort((a,b)=>String(a.date).localeCompare(String(b.date))||a.type.localeCompare(b.type));
-  const overlaysTable=overlays.length?`<table><thead><tr><th>Type</th><th>Dates</th><th>Status</th><th></th></tr></thead><tbody>${overlays.map(x=>`<tr><td><strong>${h(x.type)}</strong></td><td>${x.period}</td><td>${x.detail}</td><td><a class="button secondary" href="${x.href}">View</a></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No existing leave, WFH or absence overlays intersect this request.</div>';
-  const overlaysCard=`<div class="table-card section-gap"><h2>Existing Attendance Overlays</h2><p class="muted">Other attendance records intersecting the requested dates. The request currently being reviewed is excluded.</p>${overlaysTable}</div>`;
+  const overlaysTable=overlays.length?`<table><thead><tr><th>Type</th><th>Dates</th><th>Status</th><th></th></tr></thead><tbody>${overlays.map(x=>`<tr><td><strong>${h(x.type)}</strong></td><td>${x.period}</td><td>${x.detail}</td><td><a class="button secondary" href="${x.href}">View</a></td></tr>`).join('')}</tbody></table>`:`<div class="empty">No existing leave, WFH or absence overlays occur between ${h(overlayStart)} and ${h(overlayEnd)}.</div>`;
+  const overlaysCard=`<div class="table-card section-gap"><h2>Existing Attendance Overlays</h2><p class="muted">Other attendance records during the calendar week${overlayWeeks===1?'':'s'} covered by this request (${h(overlayStart)} → ${h(overlayEnd)}). The request currently being reviewed is excluded.</p>${overlaysTable}</div>`;
   const balance = await leaveBalance(db,item.employee_id);
   const requestCost = rotaDays.reduce((sum,d)=>sum+(d.working?(d.portion==='FULL'?1:0.5):0),0);
   const projected = balance ? balance.remaining - requestCost : null;
