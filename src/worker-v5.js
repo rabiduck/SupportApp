@@ -127,7 +127,7 @@ function nav(user, active = '') {
       ['WFH Requests','/wfh-requests','WFH Requests'],
       ['Employees','/employees','Employees'],
       ['Shift Patterns','/shift-patterns','Shift Patterns'],
-      ...(user.isSystemAdmin ? [['Teams','/teams','Teams'],['System Administration','/administration','Administration']] : [])
+      ...(user.isSystemAdmin ? [['Teams','/teams','Teams'],['Leave Years','/leave-years','Leave Years'],['System Administration','/administration','Administration']] : [])
     ]}] : [])
   ];
   const dashboard = (user.isManager || user.isSystemAdmin) ? `<a class="nav-top ${active==='Dashboard'?'active':''}" href="/">Dashboard</a>` : '';
@@ -150,6 +150,7 @@ function activeForPath(path) {
   if (path.startsWith('/teams')) return 'Teams';
   if (path.startsWith('/employees')) return 'Employees';
   if (path.startsWith('/shift-') || path.startsWith('/week-patterns') || path.startsWith('/rota-patterns')) return 'Shift Patterns';
+  if (path.startsWith('/leave-years')) return 'Leave Years';
   if (path.startsWith('/administration')) return 'Administration';
   return '';
 }
@@ -829,21 +830,21 @@ export default {
       if (path === '/leave/quick' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return quickLeavePage(request,env.DB,user);
       if (/^\/wfh\/\d+\/cancel$/.test(path) && request.method.toUpperCase()==='POST') return cancelWfh(request,env.DB,user,Number(path.split('/')[2]));
       if (path === '/wfh/request' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhRequestPage(request,env.DB,user);
-      if (user.isManager && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
-      if (user.isManager && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
+      if ((user.isManager || user.isSystemAdmin) && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
+      if ((user.isManager || user.isSystemAdmin) && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
 
       if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
       if (/^\/leave\/\d+\/cancel$/.test(path) && request.method.toUpperCase() === 'POST') return cancelOwnLeave(request, env.DB, user, Number(path.split('/')[2]));
       if (/^\/leave\/\d+\/change$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return changeOwnApprovedLeave(request, env.DB, user, Number(path.split('/')[2]));
-      if (user.isManager && /^\/leave-changes\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return reviewLeaveChange(request, env.DB, user, Number(path.split('/')[2]));
+      if ((user.isManager || user.isSystemAdmin) && /^\/leave-changes\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return reviewLeaveChange(request, env.DB, user, Number(path.split('/')[2]));
 
       if (/^\/leave\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return editOwnPendingLeave(request, env.DB, user, Number(path.split('/')[2]));
 
 
-      if (user.isManager && /^\/leave-requests\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return managerEditEmployeeLeave(request, env.DB, user, Number(path.split('/')[2]));
+      if ((user.isManager || user.isSystemAdmin) && /^\/leave-requests\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return managerEditEmployeeLeave(request, env.DB, user, Number(path.split('/')[2]));
 
-      if (user.isManager && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
-      if (user.isManager && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
+      if ((user.isManager || user.isSystemAdmin) && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
+      if ((user.isManager || user.isSystemAdmin) && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
 
       const requestForApp = withIdentityHeader(request, user.email || identity.email || null);
       if (!user.isManager && !user.isSystemAdmin) {
