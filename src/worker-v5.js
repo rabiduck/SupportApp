@@ -193,6 +193,8 @@ async function pdpConfigPage(db,user){
 async function pdpMatrixPage(request,db,user,id){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const teams=await rows(db,'SELECT id,name FROM teams WHERE is_active=1 ORDER BY name');
+  const availableCategories=id ? await rows(db,'SELECT id,name FROM pdp_categories WHERE is_active=1 AND id NOT IN (SELECT category_id FROM pdp_matrix_categories WHERE matrix_id=?) ORDER BY display_order,name',id) : [];
+  const matrixCategories=id ? await rows(db,'SELECT mc.id,mc.category_id,mc.display_order,c.name,c.description FROM pdp_matrix_categories mc JOIN pdp_categories c ON c.id=mc.category_id WHERE mc.matrix_id=? ORDER BY mc.display_order,c.name',id) : [];
   let item={id:null,name:'',description:'',is_active:1}, selected=new Set();
   if(id){
     item=await row(db,'SELECT * FROM pdp_matrices WHERE id=?',id);
@@ -210,8 +212,29 @@ async function pdpMatrixPage(request,db,user,id){
     return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
   }
   const teamChecks=teams.length?teams.map(t=>'<label class="check-row"><input type="checkbox" name="team_id" value="'+t.id+'" '+(selected.has(Number(t.id))?'checked':'')+'> '+h(t.name)+'</label>').join(''):'<div class="empty">No active teams are available.</div>';
+  const structure=id ? '<div class="section-gap"><h2>Matrix Structure</h2><p class="muted">Add categories from the catalogue and arrange the order they will appear in this matrix.</p>'+(matrixCategories.length?'<div class="table-card"><table><thead><tr><th>Category</th><th>Description</th><th>Order</th><th></th></tr></thead><tbody>'+matrixCategories.map((x,i)=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+h(x.description||'—')+'</td><td><form class="inline-form" method="post" action="/pdp/matrices/'+id+'/categories/'+x.id+'/move"><button class="secondary" name="direction" value="up" '+(i===0?'disabled':'')+'>↑</button> <button class="secondary" name="direction" value="down" '+(i===matrixCategories.length-1?'disabled':'')+'>↓</button></form></td><td><form class="inline-form" method="post" action="/pdp/matrices/'+id+'/categories/'+x.id+'/remove"><button class="secondary" type="submit">Remove</button></form></td></tr>').join('')+'</tbody></table></div>':'<div class="empty">No categories have been added to this matrix yet.</div>')+(availableCategories.length?'<form class="form-card section-gap" method="post" action="/pdp/matrices/'+id+'/categories"><label>Add Category<select name="category_id" required><option value="">— Select category —</option>'+availableCategories.map(x=>'<option value="'+x.id+'">'+h(x.name)+'</option>').join('')+'</select></label><div class="action-bar"><button type="submit">Add Category</button></div></form>':'<p class="muted section-gap">All active categories are already included in this matrix.</p>')+'</div>' : '';
   const content='<div class="form-card"><form method="post"><label>Matrix Name<input name="name" value="'+h(item.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(item.description||'')+'</textarea></label><fieldset><legend>Applicable Teams</legend>'+teamChecks+'</fieldset><label>Status<select name="is_active"><option value="1" '+(item.is_active?'selected':'')+'>Active</option><option value="0" '+(!item.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">'+(id?'Save Changes':'Create Matrix')+'</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
   return appPage(id?'Edit Skills Matrix':'Create Skills Matrix','Define the matrix and the teams it applies to. Categories and skills will be added in the next step.',content,user,'PDP Configuration',db);
+}
+async function pdpMatrixCategoryAction(request,db,user,matrixId,linkId,action){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const matrix=await row(db,'SELECT id FROM pdp_matrices WHERE id=?',matrixId); if(!matrix) return accessPage('Matrix Not Found','That skills matrix does not exist.',404);
+  if(action==='add'){
+    const form=await request.formData(),categoryId=Number(form.get('category_id')); if(!categoryId) return accessPage('Invalid Category','Select a category to add.',400);
+    const category=await row(db,'SELECT id FROM pdp_categories WHERE id=? AND is_active=1',categoryId); if(!category) return accessPage('Category Not Found','That active category does not exist.',404);
+    await db.prepare('INSERT OR IGNORE INTO pdp_matrix_categories(matrix_id,category_id,display_order) VALUES(?,?,COALESCE((SELECT MAX(display_order)+1 FROM pdp_matrix_categories WHERE matrix_id=?),0))').bind(matrixId,categoryId,matrixId).run();
+  } else {
+    const link=await row(db,'SELECT id,display_order FROM pdp_matrix_categories WHERE id=? AND matrix_id=?',linkId,matrixId); if(!link) return accessPage('Category Not Found','That category is not part of this matrix.',404);
+    if(action==='remove') await db.prepare('DELETE FROM pdp_matrix_categories WHERE id=?').bind(linkId).run();
+    if(action==='move'){
+      const form=await request.formData(),direction=String(form.get('direction')||'');
+      const op=direction==='up'?'<':'>', order=direction==='up'?'DESC':'ASC';
+      if(direction!=='up'&&direction!=='down') return accessPage('Invalid Move','Choose a valid move direction.',400);
+      const other=await row(db,'SELECT id,display_order FROM pdp_matrix_categories WHERE matrix_id=? AND display_order '+op+' ? ORDER BY display_order '+order+' LIMIT 1',matrixId,link.display_order);
+      if(other){await db.prepare('UPDATE pdp_matrix_categories SET display_order=? WHERE id=?').bind(other.display_order,link.id).run();await db.prepare('UPDATE pdp_matrix_categories SET display_order=? WHERE id=?').bind(link.display_order,other.id).run();}
+    }
+  }
+  return new Response(null,{status:303,headers:{Location:'/pdp/matrices/'+matrixId+'/edit'}});
 }
 async function pdpCreateSkill(request,db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
@@ -928,6 +951,9 @@ export default {
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
       if (path==='/pdp/matrices/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMatrixPage(request,env.DB,user,null);
+      if (/^\/pdp\/matrices\/\d+\/categories$/.test(path) && request.method.toUpperCase()==='POST') return pdpMatrixCategoryAction(request,env.DB,user,Number(path.split('/')[3]),null,'add');
+      if (/^\/pdp\/matrices\/\d+\/categories\/\d+\/remove$/.test(path) && request.method.toUpperCase()==='POST') { const p=path.split('/'); return pdpMatrixCategoryAction(request,env.DB,user,Number(p[3]),Number(p[5]),'remove'); }
+      if (/^\/pdp\/matrices\/\d+\/categories\/\d+\/move$/.test(path) && request.method.toUpperCase()==='POST') { const p=path.split('/'); return pdpMatrixCategoryAction(request,env.DB,user,Number(p[3]),Number(p[5]),'move'); }
       if (/^\/pdp\/matrices\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMatrixPage(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/pdp/skills' && request.method.toUpperCase()==='POST') return pdpCreateSkill(request,env.DB,user);
       if (path==='/pdp/categories' && request.method.toUpperCase()==='POST') return pdpCreateCategory(request,env.DB,user);
