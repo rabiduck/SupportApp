@@ -167,15 +167,20 @@ async function pdpConfigPage(db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const skills=await rows(db,'SELECT id,name,description,is_active FROM pdp_skills ORDER BY is_active DESC,name');
   const categories=await rows(db,'SELECT id,name,description,is_active,display_order FROM pdp_categories ORDER BY is_active DESC,display_order,name');
+  const abilityScale=await rows(db,'SELECT score,level,explanation FROM pdp_ability_scale ORDER BY score DESC');
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
   const categoryTable=categories.length
     ? '<table><thead><tr><th>Category</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+categories.map(x=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+h(x.description||'—')+'</td><td>'+(x.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/categories/'+x.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No categories configured yet.</div>';
+  const abilityTable=abilityScale.length
+    ? '<table><thead><tr><th>Score</th><th>Level</th><th>Explanation</th><th></th></tr></thead><tbody>'+abilityScale.map(x=>'<tr><td><strong>'+x.score+'</strong></td><td>'+h(x.level)+'</td><td>'+h(x.explanation)+'</td><td><a class="button secondary" href="/pdp/ability/'+x.score+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
+    : '<div class="empty">Ability scale has not been configured.</div>';
   const content=''
     +'<h2>Skills</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
     +'<h2 class="section-gap">Categories</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-category">Add Category</button></div><div class="table-card">'+categoryTable+'</div>'
+    +'<h2 class="section-gap">Ability Scale</h2><p class="muted">The 1–5 scores are fixed. Edit the level names and explanations to define what each score means for this PDP framework.</p><div class="table-card">'+abilityTable+'</div>'
     +'<dialog class="app-modal" id="add-pdp-category"><div class="modal-head"><h2>Add Category</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/categories"><label>Category Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Category</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>'
     +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
   return appPage('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.',content,user,'PDP Configuration',db);
@@ -222,6 +227,20 @@ async function pdpEditCategoryPage(request,db,user,id){
   }
   const content='<div class="form-card"><form method="post"><label>Category Name<input name="name" value="'+h(item.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(item.description||'')+'</textarea></label><label>Status<select name="is_active"><option value="1" '+(item.is_active?'selected':'')+'>Active</option><option value="0" '+(!item.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
   return appPage('Edit Category','Update the reusable PDP category.',content,user,'PDP Configuration',db);
+}
+async function pdpEditAbilityPage(request,db,user,score){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  if(score<1 || score>5) return accessPage('Invalid Score','Ability scores must be between 1 and 5.',400);
+  const item=await row(db,'SELECT score,level,explanation FROM pdp_ability_scale WHERE score=?',score);
+  if(!item) return accessPage('Ability Level Not Found','That ability level does not exist.',404);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),level=String(form.get('level')||'').trim(),explanation=String(form.get('explanation')||'').trim();
+    if(!level || !explanation) return accessPage('Invalid Ability Level','Both a level name and explanation are required.',400);
+    await db.prepare('UPDATE pdp_ability_scale SET level=?,explanation=?,updated_at=CURRENT_TIMESTAMP WHERE score=?').bind(level,explanation,score).run();
+    return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+  }
+  const content='<div class="form-card"><form method="post"><label>Score<input value="'+item.score+'" disabled></label><label>Level<input name="level" value="'+h(item.level)+'" required maxlength="80"></label><label>Explanation<textarea name="explanation" rows="5" required maxlength="750">'+h(item.explanation)+'</textarea></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
+  return appPage('Edit Ability Level','Define what score '+item.score+' means when employees and managers assess ability.',content,user,'PDP Configuration',db);
 }
 async function pdpPlaceholder(user,title,message,active){
   return appPage(title,message,'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
@@ -882,6 +901,7 @@ export default {
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
       if (path==='/pdp/skills' && request.method.toUpperCase()==='POST') return pdpCreateSkill(request,env.DB,user);
       if (path==='/pdp/categories' && request.method.toUpperCase()==='POST') return pdpCreateCategory(request,env.DB,user);
+      if (/^\/pdp\/ability\/[1-5]\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditAbilityPage(request,env.DB,user,Number(path.split('/')[3]));
       if (/^\/pdp\/categories\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditCategoryPage(request,env.DB,user,Number(path.split('/')[3]));
       if (/^\/pdp\/skills\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditSkillPage(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/pdp/my-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'My Skills','Complete and review your PDP skills assessment.','PDP My Skills');
