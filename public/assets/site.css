@@ -179,3 +179,34 @@ code { font-family: Consolas, "Courier New", monospace; }
 .modal-close:hover { background:rgba(0,0,0,.06); }
 .modal-body { padding:22px; overflow:auto; }
 .app-modal form { margin:0; }
+
+
+/* PDP matrix editor */
+.matrix-details { max-width: 1050px; }
+.matrix-details-grid { display:grid; grid-template-columns:minmax(360px,1.5fr) minmax(260px,.9fr); gap:28px; align-items:start; }
+.matrix-details-main input,.matrix-details-main select,.matrix-details-main textarea { max-width:none; }
+.matrix-team-picker { margin-top:54px; padding:12px 16px 14px; border:1px solid var(--border-dark); border-radius:4px; min-width:0; }
+.matrix-team-picker legend { padding:0 6px; }
+.matrix-team-picker .check-row { display:flex; align-items:center; gap:10px; margin:7px 0; color:var(--primary); font-weight:700; }
+.matrix-team-picker input[type="checkbox"] { width:auto; max-width:none; }
+.matrix-builder { display:grid; gap:18px; }
+.matrix-category { background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
+.matrix-category-head { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:12px 14px; background:#EAF5F7; color:var(--primary); }
+.matrix-category-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.matrix-skill-table { box-shadow:none; border-radius:0; }
+.matrix-skill-table th:nth-child(1) { width:28%; }
+.matrix-skill-table th:nth-child(2) { width:auto; }
+.matrix-skill-table th:nth-child(3) { width:150px; text-align:center; }
+.matrix-skill-table th:nth-child(4) { width:130px; }
+.matrix-skill-table td { vertical-align:middle; }
+.matrix-order { text-align:center; white-space:nowrap; }
+.matrix-action { text-align:right; white-space:nowrap; }
+button.compact { min-width:44px; width:44px; padding:0; }
+.matrix-add-row td { background:#F9FCFD; }
+.matrix-add-form { display:flex; align-items:center; gap:10px; }
+.matrix-add-form select { max-width:350px; }
+@media (max-width:900px) {
+  .matrix-details-grid { grid-template-columns:1fr; }
+  .matrix-team-picker { margin-top:0; }
+  .matrix-category-head { align-items:flex-start; flex-direction:column; }
+}
