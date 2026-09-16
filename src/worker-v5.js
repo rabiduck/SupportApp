@@ -124,7 +124,7 @@ function nav(user, active = '', pdpOutstanding = 0) {
     ]},
     {name:'PDP', items:[
       ['My Skills','/pdp/my-skills','PDP My Skills'],
-      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
+      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['Team Assessments','/pdp/team-assessments','PDP Team Assessments'],['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
     ]},
     ...(isAdmin ? [{name:'Administration', items:[
       ['Leave Requests','/leave-requests','Leave Requests'],
@@ -145,6 +145,7 @@ function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-g
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
+  if (path.startsWith('/pdp/team-assessments')) return 'PDP Team Assessments';
   if (path.startsWith('/pdp/cycles')) return 'PDP Cycles';
   if (path.startsWith('/pdp/config') || path.startsWith('/pdp/skills')) return 'PDP Configuration';
   if (path.startsWith('/pdp/team-skills')) return 'PDP Team Skills';
@@ -330,6 +331,36 @@ async function pdpEditAbilityPage(request,db,user,score){
   }
   const content='<div class="form-card"><form method="post"><label>Score<input value="'+item.score+'" disabled></label><label>Level<input name="level" value="'+h(item.level)+'" required maxlength="80"></label><label>Explanation<textarea name="explanation" rows="5" required maxlength="750">'+h(item.explanation)+'</textarea></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
   return appPage('Edit Ability Level','Define what score '+item.score+' means when employees and managers assess ability.',content,user,'PDP Configuration',db);
+}
+async function pdpTeamAssessmentsPage(request,db,user,employeeId=null,cycleId=null){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const teamFilter=user.isTeamLeader&&!user.isManager&&!user.isSystemAdmin?user.managedTeamIds:[];
+  if(employeeId&&cycleId){
+    const employee=await row(db,'SELECT e.id,e.display_name,e.team_id,t.name team_name FROM employees e JOIN teams t ON t.id=e.team_id WHERE e.id=?',employeeId);
+    if(!employee|| (teamFilter.length&&!teamFilter.includes(Number(employee.team_id))))return accessPage('Access Denied','You cannot assess this employee.',403);
+    const cycle=await row(db,`SELECT c.*,p.status participant_status FROM pdp_cycles c JOIN pdp_cycle_participants p ON p.cycle_id=c.id WHERE c.id=? AND p.employee_id=? AND c.status='published'`,cycleId,employeeId);
+    if(!cycle)return accessPage('Assessment Not Found','That published employee assessment does not exist.',404);
+    if(request.method.toUpperCase()==='POST'){
+      const form=await request.formData(),assessments=await rows(db,'SELECT id,skill_id FROM pdp_skill_assessments WHERE cycle_id=? AND employee_id=?',cycleId,employeeId);
+      for(const a of assessments){const av=Number(form.get('management_ability_'+a.skill_id)),iv=Number(form.get('management_interest_'+a.skill_id));const ability=av>=1&&av<=5?av:null,interest=iv>=1&&iv<=5?iv:null;await db.prepare('UPDATE pdp_skill_assessments SET management_ability=?,management_interest=?,management_assessor_id=?,management_updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(ability,interest,user.id,a.id).run();}
+      return new Response(null,{status:303,headers:{Location:'/pdp/team-assessments/'+employeeId+'/'+cycleId}});
+    }
+    const matrixRows=await rows(db,'SELECT matrix_name,matrix_snapshot FROM pdp_cycle_matrices WHERE cycle_id=? AND team_id=? ORDER BY matrix_name',cycleId,employee.team_id),ratings=await rows(db,'SELECT skill_id,self_ability,self_interest,management_ability,management_interest FROM pdp_skill_assessments WHERE cycle_id=? AND employee_id=?',cycleId,employeeId),rm=new Map(ratings.map(r=>[Number(r.skill_id),r]));
+    let scale=[];try{scale=JSON.parse(cycle.ability_scale_snapshot||'[]')}catch(_){}
+    const scaleHtml=scale.length?'<div class="card pdp-scale"><h3>Ability Scale</h3>'+scale.slice().sort((a,b)=>b.score-a.score).map(s=>'<p><strong>'+s.score+' · '+h(s.level)+'</strong> — '+h(s.explanation)+'</p>').join('')+'</div>':'';
+    const opts=v=>'<option value="">—</option>'+[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(Number(v)===n?'selected':'')+'>'+n+'</option>').join(''),seen=new Set();
+    const html=matrixRows.map(m=>{let snap={categories:[],skills:[]};try{snap=JSON.parse(m.matrix_snapshot)}catch(_){}
+      const cats=(snap.categories||[]).map(cat=>{const skills=(snap.skills||[]).filter(s=>Number(s.category_id)===Number(cat.category_id)&&!seen.has(Number(s.skill_id)));skills.forEach(s=>seen.add(Number(s.skill_id)));if(!skills.length)return'';return '<section class="assessment-category"><h3>'+h(cat.name)+'</h3><div class="table-card"><table><thead><tr><th>Skill</th><th>Employee Ability</th><th>Employee Interest</th><th>Manager/TL Ability</th><th>Manager/TL Interest</th></tr></thead><tbody>'+skills.map(s=>{const r=rm.get(Number(s.skill_id))||{};return '<tr><td><strong>'+h(s.name)+'</strong><div class="muted">'+h(s.description||'')+'</div></td><td>'+h(r.self_ability||'—')+'</td><td>'+h(r.self_interest||'—')+'</td><td><select name="management_ability_'+s.skill_id+'">'+opts(r.management_ability)+'</select></td><td><select name="management_interest_'+s.skill_id+'">'+opts(r.management_interest)+'</select></td></tr>'}).join('')+'</tbody></table></div></section>'}).join('');return cats?'<section class="assessment-matrix"><h2>'+h(m.matrix_name)+'</h2>'+cats+'</section>':''}).join('');
+    return appPage('PDP Assessment · '+employee.display_name,cycle.name+' · '+employee.team_name,'<div class="card"><strong>Employee status:</strong> '+h(cycle.participant_status.replace('_',' '))+'</div>'+scaleHtml+'<form method="post">'+html+'<div class="action-bar section-gap"><button type="submit">Save Manager/TL Ratings</button><a class="button secondary" href="/pdp/team-assessments">Back</a></div></form>',user,'PDP Team Assessments',db);
+  }
+  const params=teamFilter.length?teamFilter:[],where=teamFilter.length?' AND e.team_id IN ('+teamFilter.map(()=>'?').join(',')+')':'';
+  const items=await rows(db,`SELECT c.id cycle_id,c.name cycle_name,c.due_date,e.id employee_id,e.display_name,t.name team_name,p.status,
+    SUM(CASE WHEN a.management_ability IS NOT NULL THEN 1 ELSE 0 END) manager_rated,COUNT(a.id) skill_count
+    FROM pdp_cycle_participants p JOIN pdp_cycles c ON c.id=p.cycle_id JOIN employees e ON e.id=p.employee_id JOIN teams t ON t.id=e.team_id
+    LEFT JOIN pdp_skill_assessments a ON a.cycle_id=c.id AND a.employee_id=e.id WHERE c.status='published'${where}
+    GROUP BY c.id,e.id ORDER BY c.due_date IS NULL,c.due_date,t.name,e.display_name`,...params);
+  const table=items.length?'<div class="table-card"><table><thead><tr><th>Employee</th><th>Team</th><th>Cycle</th><th>Employee</th><th>Manager/TL</th><th></th></tr></thead><tbody>'+items.map(x=>'<tr><td><strong>'+h(x.display_name)+'</strong></td><td>'+h(x.team_name)+'</td><td>'+h(x.cycle_name)+'</td><td>'+h(x.status.replace('_',' '))+'</td><td>'+x.manager_rated+'/'+x.skill_count+' rated</td><td><a class="button secondary" href="/pdp/team-assessments/'+x.employee_id+'/'+x.cycle_id+'">Assess</a></td></tr>').join('')+'</tbody></table></div>':'<div class="empty">There are no published PDP assessments available to review.</div>';
+  return appPage('Team PDP Assessments','Review employee self-assessments and record Manager/TL ratings.',table,user,'PDP Team Assessments',db);
 }
 async function pdpCyclesPage(db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
@@ -1092,6 +1123,8 @@ export default {
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
+      if (path==='/pdp/team-assessments' && request.method.toUpperCase()==='GET') return pdpTeamAssessmentsPage(request,env.DB,user);
+      if (/^\\/pdp\\/team-assessments\\/\\d+\\/\\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) { const p=path.split('/'); return pdpTeamAssessmentsPage(request,env.DB,user,Number(p[3]),Number(p[4])); }
       if (path==='/pdp/cycles' && request.method.toUpperCase()==='GET') return pdpCyclesPage(env.DB,user);
       if (path==='/pdp/cycles/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,null);
       if (/^\/pdp\/cycles\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,Number(path.split('/')[3]));
