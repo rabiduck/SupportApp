@@ -122,6 +122,10 @@ function nav(user, active = '') {
       ['On Call','/on-call','On Call'],
       ['Gatekeepers','/gatekeepers','Gatekeepers']
     ]},
+    {name:'PDP', items:[
+      ['My Skills','/pdp/my-skills','PDP My Skills'],
+      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
+    ]},
     ...(isAdmin ? [{name:'Administration', items:[
       ['Leave Requests','/leave-requests','Leave Requests'],
       ['WFH Requests','/wfh-requests','WFH Requests'],
@@ -141,6 +145,9 @@ function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-g
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
+  if (path.startsWith('/pdp/config') || path.startsWith('/pdp/skills')) return 'PDP Configuration';
+  if (path.startsWith('/pdp/team-skills')) return 'PDP Team Skills';
+  if (path.startsWith('/pdp/my-skills')) return 'PDP My Skills';
   if (path.startsWith('/on-call')) return 'On Call';
   if (path.startsWith('/gatekeeper')) return 'Gatekeepers';
   if (path.startsWith('/rota')) return 'Rota';
