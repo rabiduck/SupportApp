@@ -208,6 +208,11 @@ const V21_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='21' WHERE key='schema_version'"
 ];
 
+const V22_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS pdp_cycle_matrix_links (cycle_id INTEGER NOT NULL, matrix_id INTEGER NOT NULL, PRIMARY KEY(cycle_id,matrix_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE, FOREIGN KEY(matrix_id) REFERENCES pdp_matrices(id))",
+ "UPDATE app_meta SET value='22' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -248,5 +253,6 @@ export async function ensureSchema(db) {
   if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); version = 18; }
   if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); version = 19; }
   if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); version = 20; }
-  if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); }
+  if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); version = 21; }
+  if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); }
 }
