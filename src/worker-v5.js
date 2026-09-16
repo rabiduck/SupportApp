@@ -175,13 +175,45 @@ function pdpMatrixConflictMessage(conflicts){
   return 'Each team can be represented by only one matrix in a PDP cycle. Conflicts: '+conflicts.map(x=>x.team_name+' ('+x.matrix_names+')').join('; ')+'.';
 }
 
+function pdpTeamIdsInScope(user,teamIds){
+  if(user.isSystemAdmin)return true;
+  const managed=new Set((user.managedTeamIds||[]).map(Number));
+  const ids=[...new Set(teamIds.map(Number).filter(Number.isInteger))];
+  return ids.length>0&&ids.every(id=>managed.has(id));
+}
+
+async function pdpMatrixTeamIds(db,matrixId){
+  return (await rows(db,'SELECT team_id FROM pdp_matrix_teams WHERE matrix_id=?',matrixId)).map(x=>Number(x.team_id));
+}
+
+async function pdpMatrixInScope(db,user,matrixId){
+  return pdpTeamIdsInScope(user,await pdpMatrixTeamIds(db,matrixId));
+}
+
+async function pdpCycleTeamIds(db,cycleId){
+  const result=await rows(db,`SELECT team_id FROM pdp_cycle_matrices WHERE cycle_id=?
+    UNION SELECT e.team_id FROM pdp_cycle_participants p JOIN employees e ON e.id=p.employee_id WHERE p.cycle_id=?
+    UNION SELECT mt.team_id FROM pdp_cycle_matrix_links l JOIN pdp_matrix_teams mt ON mt.matrix_id=l.matrix_id WHERE l.cycle_id=?
+    UNION SELECT mt.team_id FROM pdp_cycles c JOIN pdp_matrix_teams mt ON mt.matrix_id=c.source_matrix_id WHERE c.id=?`,cycleId,cycleId,cycleId,cycleId);
+  return result.map(x=>Number(x.team_id));
+}
+
+async function pdpCycleInScope(db,user,cycleId){
+  return pdpTeamIdsInScope(user,await pdpCycleTeamIds(db,cycleId));
+}
+
+function pdpScopeDenied(subject='PDP item'){
+  return accessPage('Access Denied',subject+' includes a team outside your management scope.',403);
+}
+
 
 async function pdpConfigPage(db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const skills=await rows(db,'SELECT id,name,description,is_active FROM pdp_skills ORDER BY is_active DESC,name');
   const categories=await rows(db,'SELECT id,name,description,is_active,display_order FROM pdp_categories ORDER BY is_active DESC,display_order,name');
   const abilityScale=await rows(db,'SELECT score,level,explanation FROM pdp_ability_scale ORDER BY score DESC');
-  const matrices=await rows(db,"SELECT m.id,m.name,m.description,m.is_active,COALESCE(GROUP_CONCAT(t.name, ', '),'—') teams FROM pdp_matrices m LEFT JOIN pdp_matrix_teams mt ON mt.matrix_id=m.id LEFT JOIN teams t ON t.id=mt.team_id GROUP BY m.id ORDER BY m.is_active DESC,m.name");
+  let matrices=await rows(db,"SELECT m.id,m.name,m.description,m.is_active,COALESCE(GROUP_CONCAT(t.name, ', '),'—') teams,GROUP_CONCAT(mt.team_id) team_ids FROM pdp_matrices m LEFT JOIN pdp_matrix_teams mt ON mt.matrix_id=m.id LEFT JOIN teams t ON t.id=mt.team_id GROUP BY m.id ORDER BY m.is_active DESC,m.name");
+  if(!user.isSystemAdmin)matrices=matrices.filter(x=>pdpTeamIdsInScope(user,String(x.team_ids||'').split(',').map(Number)));
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
@@ -220,17 +252,21 @@ async function pdpMatrixStructureHtml(db,id){
 function pdpMatrixAjaxScript(){return '<script>(()=>{const root=document.getElementById("matrix-structure");if(!root)return;root.addEventListener("submit",async e=>{const form=e.target.closest("form.matrix-ajax");if(!form)return;e.preventDefault();const submitter=e.submitter;const data=new FormData(form);if(submitter&&submitter.name)data.set(submitter.name,submitter.value);const buttons=form.querySelectorAll("button");buttons.forEach(b=>b.disabled=true);try{const response=await fetch(form.action,{method:"POST",body:data,headers:{"X-SupportApp-Partial":"matrix-structure"}});if(!response.ok)throw new Error("Request failed");root.outerHTML=await response.text()}catch(err){form.submit()}})})()</script>';}
 async function pdpMatrixPage(request,db,user,id){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
-  const teams=await rows(db,'SELECT id,name FROM teams WHERE is_active=1 ORDER BY name');
+  const scopeIds=user.isSystemAdmin?[]:(user.managedTeamIds||[]).map(Number),scopeWhere=user.isSystemAdmin?'':' AND id IN ('+(scopeIds.map(()=>'?').join(',')||'NULL')+')';
+  const teams=await rows(db,'SELECT id,name FROM teams WHERE is_active=1'+scopeWhere+' ORDER BY name',...scopeIds);
   let item={id:null,name:'',description:'',is_active:1}, selected=new Set();
   if(id){
     item=await row(db,'SELECT * FROM pdp_matrices WHERE id=?',id);
     if(!item) return accessPage('Matrix Not Found','That skills matrix does not exist.',404);
     const linked=await rows(db,'SELECT team_id FROM pdp_matrix_teams WHERE matrix_id=?',id); selected=new Set(linked.map(x=>Number(x.team_id)));
+    if(!pdpTeamIdsInScope(user,[...selected]))return pdpScopeDenied('This skills matrix');
   }
   if(request.method.toUpperCase()==='POST'){
     const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim(),active=form.get('is_active')==='1'?1:0;
     const teamIds=form.getAll('team_id').map(Number).filter(Number.isInteger);
     if(!name) return accessPage('Invalid Matrix','A matrix name is required.',400);
+    if(!user.isSystemAdmin&&!teamIds.length)return accessPage('Invalid Matrix','Assign the matrix to at least one team within your management scope.',400);
+    if(!pdpTeamIdsInScope(user,teamIds))return pdpScopeDenied('This skills matrix');
     if(id) await db.prepare('UPDATE pdp_matrices SET name=?,description=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,description||null,active,id).run();
     else { const result=await db.prepare('INSERT INTO pdp_matrices(name,description,is_active) VALUES(?,?,?)').bind(name,description||null,active).run(); id=Number(result.meta.last_row_id); }
     await db.prepare('DELETE FROM pdp_matrix_teams WHERE matrix_id=?').bind(id).run();
@@ -245,6 +281,7 @@ async function pdpMatrixPage(request,db,user,id){
 async function pdpMatrixCategoryAction(request,db,user,matrixId,linkId,action){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const matrix=await row(db,'SELECT id FROM pdp_matrices WHERE id=?',matrixId); if(!matrix) return accessPage('Matrix Not Found','That skills matrix does not exist.',404);
+  if(!await pdpMatrixInScope(db,user,matrixId))return pdpScopeDenied('This skills matrix');
   if(action==='add'){
     const form=await request.formData(),categoryId=Number(form.get('category_id')); if(!categoryId) return accessPage('Invalid Category','Select a category to add.',400);
     const category=await row(db,'SELECT id FROM pdp_categories WHERE id=? AND is_active=1',categoryId); if(!category) return accessPage('Category Not Found','That active category does not exist.',404);
@@ -266,6 +303,7 @@ async function pdpMatrixCategoryAction(request,db,user,matrixId,linkId,action){
 async function pdpMatrixSkillAction(request,db,user,matrixId,linkId,action){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const matrix=await row(db,'SELECT id FROM pdp_matrices WHERE id=?',matrixId); if(!matrix) return accessPage('Matrix Not Found','That skills matrix does not exist.',404);
+  if(!await pdpMatrixInScope(db,user,matrixId))return pdpScopeDenied('This skills matrix');
   if(action==='add'){
     const form=await request.formData(),categoryId=Number(form.get('category_id')),skillId=Number(form.get('skill_id'));
     if(!categoryId||!skillId) return accessPage('Invalid Skill','Select a category and skill.',400);
@@ -383,25 +421,30 @@ async function pdpTeamAssessmentsPage(request,db,user,employeeId=null,cycleId=nu
 }
 async function pdpCyclesPage(db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
-  const cycles=await rows(db,`SELECT c.id,c.name,c.status,c.start_date,c.due_date,c.published_at,
+  let cycles=await rows(db,`SELECT c.id,c.name,c.status,c.start_date,c.due_date,c.published_at,
     COUNT(DISTINCT p.employee_id) participants,COUNT(DISTINCT l.matrix_id) matrices
     FROM pdp_cycles c LEFT JOIN pdp_cycle_participants p ON p.cycle_id=c.id
     LEFT JOIN pdp_cycle_matrix_links l ON l.cycle_id=c.id GROUP BY c.id ORDER BY c.created_at DESC,c.id DESC`);
+  if(!user.isSystemAdmin){const scoped=[];for(const cycle of cycles)if(await pdpCycleInScope(db,user,cycle.id))scoped.push(cycle);cycles=scoped;}
   const table=cycles.length?'<div class="table-card"><table><thead><tr><th>Cycle</th><th>Matrices</th><th>Dates</th><th>Participants</th><th>Status</th><th></th></tr></thead><tbody>'+cycles.map(x=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+x.matrices+'</td><td>'+h(x.start_date||'—')+(x.due_date?' → '+h(x.due_date):'')+'</td><td>'+x.participants+'</td><td>'+h(String(x.status).replace('_',' '))+'</td><td><a class="button secondary" href="/pdp/cycles/'+x.id+'/edit">'+(x.status==='draft'?'Edit':'View')+'</a></td></tr>').join('')+'</tbody></table></div>':'<div class="empty">No PDP cycles have been created yet.</div>';
   return appPage('PDP Cycles','Create assessment rounds from one or more reusable skills matrices and publish them to staff.','<div class="action-bar"><a class="button" href="/pdp/cycles/new">Create Cycle</a></div><div class="section-gap">'+table+'</div>',user,'PDP Cycles',db);
 }
 async function pdpCyclePage(request,db,user,id){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
-  const matrices=await rows(db,`SELECT m.id,m.name,GROUP_CONCAT(t.name, ', ') teams FROM pdp_matrices m LEFT JOIN pdp_matrix_teams mt ON mt.matrix_id=m.id LEFT JOIN teams t ON t.id=mt.team_id WHERE m.is_active=1 GROUP BY m.id ORDER BY m.name`);
+  let matrices=await rows(db,`SELECT m.id,m.name,GROUP_CONCAT(t.name, ', ') teams,GROUP_CONCAT(mt.team_id) team_ids FROM pdp_matrices m LEFT JOIN pdp_matrix_teams mt ON mt.matrix_id=m.id LEFT JOIN teams t ON t.id=mt.team_id WHERE m.is_active=1 GROUP BY m.id ORDER BY m.name`);
+  if(!user.isSystemAdmin)matrices=matrices.filter(x=>pdpTeamIdsInScope(user,String(x.team_ids||'').split(',').map(Number)));
+  const allowedMatrixIds=new Set(matrices.map(x=>Number(x.id)));
   let item={name:'',start_date:'',due_date:'',status:'draft'},selectedMatrices=new Set(),selectedPeople=new Set();
   if(id){
     item=await row(db,'SELECT * FROM pdp_cycles WHERE id=?',id);if(!item)return accessPage('Cycle Not Found','That PDP cycle does not exist.',404);
+    if(!await pdpCycleInScope(db,user,id))return pdpScopeDenied('This PDP cycle');
     const ml=await rows(db,'SELECT matrix_id FROM pdp_cycle_matrix_links WHERE cycle_id=?',id);selectedMatrices=new Set(ml.map(x=>Number(x.matrix_id)));
     const ps=await rows(db,'SELECT employee_id FROM pdp_cycle_participants WHERE cycle_id=?',id);selectedPeople=new Set(ps.map(x=>Number(x.employee_id)));
     if(!selectedMatrices.size&&item.source_matrix_id)selectedMatrices.add(Number(item.source_matrix_id));
   }
   const url=new URL(request.url),queryMatrices=url.searchParams.getAll('matrix').map(Number).filter(Number.isInteger);
   const activeMatrices=queryMatrices.length?new Set(queryMatrices):selectedMatrices;
+  if(!user.isSystemAdmin&&[...activeMatrices].some(mid=>!allowedMatrixIds.has(mid)))return pdpScopeDenied('The selected skills matrix');
   const selectionConflicts=activeMatrices.size?await pdpMatrixTeamConflicts(db,[...activeMatrices]):[];
   let eligible=[];
   if(activeMatrices.size&&!selectionConflicts.length){
@@ -411,8 +454,16 @@ async function pdpCyclePage(request,db,user,id){
   if(request.method.toUpperCase()==='POST'){
     const form=await request.formData(),name=String(form.get('name')||'').trim(),matrixIds=form.getAll('matrix_id').map(Number).filter(Number.isInteger),start=String(form.get('start_date')||''),due=String(form.get('due_date')||''),employeeIds=form.getAll('employee_id').map(Number).filter(Number.isInteger);
     if(!name||!matrixIds.length)return accessPage('Invalid Cycle','A cycle name and at least one matrix are required.',400);
+    if(!user.isSystemAdmin&&matrixIds.some(mid=>!allowedMatrixIds.has(mid)))return pdpScopeDenied('The selected skills matrix');
     if(due&&start&&due<start)return accessPage('Invalid Dates','Due date cannot be before the start date.',400);
     const conflicts=await pdpMatrixTeamConflicts(db,matrixIds);if(conflicts.length)return accessPage('Team Matrix Conflict',pdpMatrixConflictMessage(conflicts),400);
+    const matrixQs=matrixIds.map(()=>'?').join(','),representedTeams=(await rows(db,`SELECT DISTINCT team_id FROM pdp_matrix_teams WHERE matrix_id IN (${matrixQs})`,...matrixIds)).map(x=>Number(x.team_id));
+    if(!pdpTeamIdsInScope(user,representedTeams))return pdpScopeDenied('This PDP cycle');
+    if(employeeIds.length){
+      const employeeQs=employeeIds.map(()=>'?').join(','),selectedEmployees=await rows(db,`SELECT id,team_id FROM employees WHERE is_active=1 AND id IN (${employeeQs})`,...employeeIds),represented=new Set(representedTeams);
+      if(selectedEmployees.length!==new Set(employeeIds).size||selectedEmployees.some(e=>!represented.has(Number(e.team_id))))return accessPage('Invalid Participants','Every participant must be an active employee in a team represented by the selected matrices.',400);
+      if(!pdpTeamIdsInScope(user,selectedEmployees.map(e=>Number(e.team_id))))return pdpScopeDenied('The selected participants');
+    }
     if(!id){const r=await db.prepare('INSERT INTO pdp_cycles(name,status,start_date,due_date,created_by) VALUES(?,?,?,?,?)').bind(name,'draft',start||null,due||null,user.id).run();id=Number(r.meta.last_row_id);}
     else {if(item.status!=='draft')return accessPage('Cycle Locked','Published PDP cycles cannot be reconfigured.',400);await db.prepare('UPDATE pdp_cycles SET name=?,start_date=?,due_date=? WHERE id=?').bind(name,start||null,due||null,id).run();}
     await db.prepare('DELETE FROM pdp_cycle_matrix_links WHERE cycle_id=?').bind(id).run();
@@ -440,6 +491,7 @@ async function pdpCyclePage(request,db,user,id){
 async function pdpCyclePublish(request,db,user,id){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const cycle=await row(db,"SELECT * FROM pdp_cycles WHERE id=? AND status='draft'",id);if(!cycle)return accessPage('Cycle Not Available','Only draft cycles can be published.',400);
+  if(!await pdpCycleInScope(db,user,id))return pdpScopeDenied('This PDP cycle');
   const participants=await rows(db,'SELECT p.employee_id,e.team_id FROM pdp_cycle_participants p JOIN employees e ON e.id=p.employee_id WHERE p.cycle_id=?',id);if(!participants.length)return accessPage('No Participants','Add at least one employee before publishing.',400);
   let links=await rows(db,'SELECT matrix_id FROM pdp_cycle_matrix_links WHERE cycle_id=?',id);
   if(!links.length&&cycle.source_matrix_id)links=[{matrix_id:cycle.source_matrix_id}];
@@ -471,6 +523,7 @@ async function pdpCyclePublish(request,db,user,id){
 async function pdpCycleClose(request,db,user,id){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager, Team Leader or System Administrator access is required.',403);
   const cycle=await row(db,"SELECT id,name FROM pdp_cycles WHERE id=? AND status='published'",id);if(!cycle)return accessPage('Cycle Not Available','Only a published PDP cycle can be closed.',400);
+  if(!await pdpCycleInScope(db,user,id))return pdpScopeDenied('This PDP cycle');
   await db.prepare("UPDATE pdp_cycles SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=? AND status='published'").bind(id).run();
   const participants=await rows(db,'SELECT employee_id FROM pdp_cycle_participants WHERE cycle_id=?',id);
   for(const p of participants)await createNotification(db,p.employee_id,'pdp_cycle_closed','PDP cycle closed',cycle.name+' has been closed and is now read-only.','/pdp/my-skills?cycle='+id);
