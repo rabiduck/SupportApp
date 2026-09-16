@@ -162,6 +162,44 @@ function activeForPath(path) {
   return '';
 }
 
+
+async function pdpConfigPage(db,user){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const skills=await rows(db,'SELECT id,name,description,is_active FROM pdp_skills ORDER BY is_active DESC,name');
+  const table=skills.length
+    ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
+    : '<div class="empty">No skills configured yet.</div>';
+  const content=pageHeader('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.')
+    +'<div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
+    +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
+  return htmlResponse('PDP Configuration',content,user,'PDP Configuration');
+}
+async function pdpCreateSkill(request,db,user){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim();
+  if(!name) return accessPage('Invalid Skill','A skill name is required.',400);
+  try { await db.prepare('INSERT INTO pdp_skills(name,description) VALUES(?,?)').bind(name,description||null).run(); }
+  catch(e){ if(String(e).includes('UNIQUE')) return accessPage('Skill Already Exists','A skill with that name already exists.',400); throw e; }
+  return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+}
+async function pdpEditSkillPage(request,db,user,id){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const skill=await row(db,'SELECT * FROM pdp_skills WHERE id=?',id);
+  if(!skill) return accessPage('Skill Not Found','That skill does not exist.',404);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim(),active=form.get('is_active')==='1'?1:0;
+    if(!name) return accessPage('Invalid Skill','A skill name is required.',400);
+    await db.prepare('UPDATE pdp_skills SET name=?,description=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,description||null,active,id).run();
+    return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+  }
+  const content=pageHeader('Edit Skill','Update the reusable skill definition. Existing historical PDP snapshots remain independent.')
+    +'<div class="form-card"><form method="post"><label>Skill Name<input name="name" value="'+h(skill.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(skill.description||'')+'</textarea></label><label>Status<select name="is_active"><option value="1" '+(skill.is_active?'selected':'')+'>Active</option><option value="0" '+(!skill.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
+  return htmlResponse('Edit Skill',content,user,'PDP Configuration');
+}
+async function pdpPlaceholder(user,title,message,active){
+  return htmlResponse(title,pageHeader(title,message)+'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
+}
+
 async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
 function mailboxHtml(count) { return `<a id="notification-mailbox" href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉<span id="notification-badge" style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px;${count ? '' : 'display:none;'}">${count > 9 ? '9+' : count}</span></a>`; }
 function notificationPollScript() { return `<script>(()=>{const refresh=async()=>{if(document.hidden)return;try{const r=await fetch('/api/notifications/unread-count',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();const b=document.getElementById('notification-badge');if(!b)return;const n=Number(d.unread)||0;b.textContent=n>9?'9+':String(n);b.style.display=n?'':'none';}catch(_){}};setInterval(refresh,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});})();</script>`; }
@@ -814,6 +852,11 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
+      if (path==='/pdp/skills' && request.method.toUpperCase()==='POST') return pdpCreateSkill(request,env.DB,user);
+      if (/^\/pdp\/skills\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditSkillPage(request,env.DB,user,Number(path.split('/')[3]));
+      if (path==='/pdp/my-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'My Skills','Complete and review your PDP skills assessment.','PDP My Skills');
+      if (path==='/pdp/team-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'Team Skills','Review skills assessments for employees in your management scope.','PDP Team Skills');
       if (path==='/gatekeepers' && request.method.toUpperCase()==='GET') return gatekeepersPage(request,env.DB,user);
       if (/^\/gatekeepers\/\d+\/member\/\d+\/move$/.test(path) && request.method.toUpperCase()==='POST') { const p=path.split('/'); return gatekeeperMove(request,env.DB,user,Number(p[2]),Number(p[4])); }
       if (/^\/gatekeepers\/\d+\/anchor$/.test(path) && request.method.toUpperCase()==='POST') return gatekeeperAnchor(request,env.DB,user,Number(path.split('/')[2]));
