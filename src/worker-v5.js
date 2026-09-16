@@ -168,6 +168,7 @@ async function pdpConfigPage(db,user){
   const skills=await rows(db,'SELECT id,name,description,is_active FROM pdp_skills ORDER BY is_active DESC,name');
   const categories=await rows(db,'SELECT id,name,description,is_active,display_order FROM pdp_categories ORDER BY is_active DESC,display_order,name');
   const abilityScale=await rows(db,'SELECT score,level,explanation FROM pdp_ability_scale ORDER BY score DESC');
+  const matrices=await rows(db,"SELECT m.id,m.name,m.description,m.is_active,COALESCE(GROUP_CONCAT(t.name, ', '),'—') teams FROM pdp_matrices m LEFT JOIN pdp_matrix_teams mt ON mt.matrix_id=m.id LEFT JOIN teams t ON t.id=mt.team_id GROUP BY m.id ORDER BY m.is_active DESC,m.name");
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
@@ -177,13 +178,40 @@ async function pdpConfigPage(db,user){
   const abilityTable=abilityScale.length
     ? '<table><thead><tr><th>Score</th><th>Level</th><th>Explanation</th><th></th></tr></thead><tbody>'+abilityScale.map(x=>'<tr><td><strong>'+x.score+'</strong></td><td>'+h(x.level)+'</td><td>'+h(x.explanation)+'</td><td><a class="button secondary" href="/pdp/ability/'+x.score+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">Ability scale has not been configured.</div>';
+  const matrixTable=matrices.length
+    ? '<table><thead><tr><th>Matrix</th><th>Description</th><th>Teams</th><th>Status</th><th></th></tr></thead><tbody>'+matrices.map(x=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+h(x.description||'—')+'</td><td>'+h(x.teams)+'</td><td>'+(x.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/matrices/'+x.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
+    : '<div class="empty">No skills matrices configured yet.</div>';
   const content=''
-    +'<h2>Skills</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
+    +'<h2>Skills Matrices</h2><div class="action-bar section-gap"><a class="button" href="/pdp/matrices/new">Create Matrix</a></div><div class="table-card">'+matrixTable+'</div>'
+    +'<h2 class="section-gap">Skills</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
     +'<h2 class="section-gap">Categories</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-category">Add Category</button></div><div class="table-card">'+categoryTable+'</div>'
     +'<h2 class="section-gap">Ability Scale</h2><p class="muted">The 1–5 scores are fixed. Edit the level names and explanations to define what each score means for this PDP framework.</p><div class="table-card">'+abilityTable+'</div>'
     +'<dialog class="app-modal" id="add-pdp-category"><div class="modal-head"><h2>Add Category</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/categories"><label>Category Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Category</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>'
     +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
   return appPage('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.',content,user,'PDP Configuration',db);
+}
+async function pdpMatrixPage(request,db,user,id){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const teams=await rows(db,'SELECT id,name FROM teams WHERE is_active=1 ORDER BY name');
+  let item={id:null,name:'',description:'',is_active:1}, selected=new Set();
+  if(id){
+    item=await row(db,'SELECT * FROM pdp_matrices WHERE id=?',id);
+    if(!item) return accessPage('Matrix Not Found','That skills matrix does not exist.',404);
+    const linked=await rows(db,'SELECT team_id FROM pdp_matrix_teams WHERE matrix_id=?',id); selected=new Set(linked.map(x=>Number(x.team_id)));
+  }
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim(),active=form.get('is_active')==='1'?1:0;
+    const teamIds=form.getAll('team_id').map(Number).filter(Number.isInteger);
+    if(!name) return accessPage('Invalid Matrix','A matrix name is required.',400);
+    if(id) await db.prepare('UPDATE pdp_matrices SET name=?,description=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,description||null,active,id).run();
+    else { const result=await db.prepare('INSERT INTO pdp_matrices(name,description,is_active) VALUES(?,?,?)').bind(name,description||null,active).run(); id=Number(result.meta.last_row_id); }
+    await db.prepare('DELETE FROM pdp_matrix_teams WHERE matrix_id=?').bind(id).run();
+    for(const teamId of teamIds) await db.prepare('INSERT INTO pdp_matrix_teams(matrix_id,team_id) VALUES(?,?)').bind(id,teamId).run();
+    return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+  }
+  const teamChecks=teams.length?teams.map(t=>'<label class="check-row"><input type="checkbox" name="team_id" value="'+t.id+'" '+(selected.has(Number(t.id))?'checked':'')+'> '+h(t.name)+'</label>').join(''):'<div class="empty">No active teams are available.</div>';
+  const content='<div class="form-card"><form method="post"><label>Matrix Name<input name="name" value="'+h(item.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(item.description||'')+'</textarea></label><fieldset><legend>Applicable Teams</legend>'+teamChecks+'</fieldset><label>Status<select name="is_active"><option value="1" '+(item.is_active?'selected':'')+'>Active</option><option value="0" '+(!item.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">'+(id?'Save Changes':'Create Matrix')+'</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
+  return appPage(id?'Edit Skills Matrix':'Create Skills Matrix','Define the matrix and the teams it applies to. Categories and skills will be added in the next step.',content,user,'PDP Configuration',db);
 }
 async function pdpCreateSkill(request,db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
@@ -899,6 +927,8 @@ export default {
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
+      if (path==='/pdp/matrices/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMatrixPage(request,env.DB,user,null);
+      if (/^\/pdp\/matrices\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMatrixPage(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/pdp/skills' && request.method.toUpperCase()==='POST') return pdpCreateSkill(request,env.DB,user);
       if (path==='/pdp/categories' && request.method.toUpperCase()==='POST') return pdpCreateCategory(request,env.DB,user);
       if (/^\/pdp\/ability\/[1-5]\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditAbilityPage(request,env.DB,user,Number(path.split('/')[3]));
