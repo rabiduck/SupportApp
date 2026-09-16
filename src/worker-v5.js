@@ -113,7 +113,7 @@ async function enrichUser(db, employee) {
   return { ...employee, roles, isSystemAdmin, isManager, isTeamLeader, primaryRole: isSystemAdmin ? 'SystemAdmin' : isManager ? 'Manager' : isTeamLeader ? 'TeamLeader' : 'Employee', managedTeamIds: managedTeamRows.map((x) => Number(x.team_id)) };
 }
 
-function nav(user, active = '') {
+function nav(user, active = '', pdpOutstanding = 0) {
   const isAdmin = user.isManager || user.isTeamLeader || user.isSystemAdmin;
   const sections = [
     {name:'Rota', items:[
@@ -137,7 +137,7 @@ function nav(user, active = '') {
   const dashboard = (user.isManager || user.isSystemAdmin) ? `<a class="nav-top ${active==='Dashboard'?'active':''}" href="/">Dashboard</a>` : '';
   return dashboard + sections.map((section,si)=>{
     const open=section.items.some(([, ,key])=>key===active);
-    return `<div class="nav-group"><button type="button" class="nav-group-toggle" data-nav-group="${si}" aria-expanded="${open?'true':'false'}"><span>${section.name}</span><span class="nav-chevron">›</span></button><div class="nav-children" data-nav-children="${si}" ${open?'':'hidden'}>${section.items.map(([label,href,key])=>`<a class="${active===key?'active':''}" href="${href}">${label}</a>`).join('')}</div></div>`;
+    return `<div class="nav-group"><button type="button" class="nav-group-toggle" data-nav-group="${si}" aria-expanded="${open?'true':'false'}"><span>${section.name}${section.name==='PDP'&&pdpOutstanding?'<span class="nav-callout">'+pdpOutstanding+'</span>':''}</span><span class="nav-chevron">›</span></button><div class="nav-children" data-nav-children="${si}" ${open?'':'hidden'}>${section.items.map(([label,href,key])=>`<a class="${active===key?'active':''}" href="${href}">${label}</a>`).join('')}</div></div>`;
   }).join('');
 }
 function modalScript(){return `<script>(()=>{document.querySelectorAll('[data-modal-open]').forEach(b=>b.addEventListener('click',()=>{const d=document.getElementById(b.dataset.modalOpen);if(d)d.showModal()}));document.querySelectorAll('[data-modal-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog')?.close()));document.querySelectorAll('dialog.app-modal').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close()}));document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('dialog.app-modal[open]')?.close()})})()</script>`;}
@@ -410,11 +410,34 @@ async function pdpCyclePublish(request,db,user,id){
   for(const p of participants)await createNotification(db,p.employee_id,'pdp_cycle','PDP assessment available',cycle.name+' is ready for your self-assessment.','/pdp/my-skills');
   return new Response(null,{status:303,headers:{Location:'/pdp/cycles/'+id+'/edit'}});
 }
+async function pdpMySkillsPage(request,db,user){
+ const cycles=await rows(db,`SELECT c.id,c.name,c.due_date,c.ability_scale_snapshot,p.status FROM pdp_cycle_participants p JOIN pdp_cycles c ON c.id=p.cycle_id WHERE p.employee_id=? AND c.status='published' ORDER BY c.due_date IS NULL,c.due_date,c.created_at DESC`,user.id);
+ if(!cycles.length)return appPage('My Skills','Your current PDP skills assessments.','<div class="empty">You have no active PDP assessments to complete.</div>',user,'PDP My Skills',db);
+ const selectedId=Number(new URL(request.url).searchParams.get('cycle')||cycles[0].id),cycle=cycles.find(x=>Number(x.id)===selectedId)||cycles[0];
+ const participant=await row(db,'SELECT status FROM pdp_cycle_participants WHERE cycle_id=? AND employee_id=?',cycle.id,user.id);
+ if(request.method.toUpperCase()==='POST'){
+  if(participant.status==='submitted')return accessPage('Assessment Submitted','This assessment has already been submitted.',400);
+  const form=await request.formData(),action=String(form.get('action')||'save'),assessments=await rows(db,'SELECT id,skill_id FROM pdp_skill_assessments WHERE cycle_id=? AND employee_id=?',cycle.id,user.id);let complete=true;
+  for(const a of assessments){const av=Number(form.get('ability_'+a.skill_id)),iv=Number(form.get('interest_'+a.skill_id)),ability=av>=1&&av<=5?av:null,interest=iv>=1&&iv<=5?iv:null;if(!ability||!interest)complete=false;await db.prepare('UPDATE pdp_skill_assessments SET self_ability=?,self_interest=?,self_updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(ability,interest,a.id).run();}
+  if(action==='submit'){if(!complete)return accessPage('Assessment Incomplete','Please rate both Ability and Interest for every skill before submitting.',400);await db.prepare("UPDATE pdp_cycle_participants SET status='submitted',submitted_at=CURRENT_TIMESTAMP WHERE cycle_id=? AND employee_id=?").bind(cycle.id,user.id).run();}
+  else await db.prepare("UPDATE pdp_cycle_participants SET status='in_progress' WHERE cycle_id=? AND employee_id=? AND status='not_started'").bind(cycle.id,user.id).run();
+  return new Response(null,{status:303,headers:{Location:'/pdp/my-skills?cycle='+cycle.id}});
+ }
+ const employee=await row(db,'SELECT team_id FROM employees WHERE id=?',user.id),matrixRows=await rows(db,'SELECT matrix_name,matrix_snapshot FROM pdp_cycle_matrices WHERE cycle_id=? AND team_id=? ORDER BY matrix_name',cycle.id,employee.team_id),ratings=await rows(db,'SELECT skill_id,self_ability,self_interest FROM pdp_skill_assessments WHERE cycle_id=? AND employee_id=?',cycle.id,user.id),ratingMap=new Map(ratings.map(r=>[Number(r.skill_id),r]));
+ let scale=[];try{scale=JSON.parse(cycle.ability_scale_snapshot||'[]')}catch(_){}
+ const scaleHtml=scale.length?'<div class="card pdp-scale"><h3>Ability Scale</h3>'+scale.slice().sort((a,b)=>b.score-a.score).map(s=>'<p><strong>'+s.score+' · '+h(s.level)+'</strong> — '+h(s.explanation)+'</p>').join('')+'</div>':'';
+ const options=(v)=>'<option value="">—</option>'+[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(Number(v)===n?'selected':'')+'>'+n+'</option>').join(''),seen=new Set();
+ const matricesHtml=matrixRows.map(m=>{let snap={categories:[],skills:[]};try{snap=JSON.parse(m.matrix_snapshot)}catch(_){}
+  const cats=(snap.categories||[]).map(cat=>{const skills=(snap.skills||[]).filter(s=>Number(s.category_id)===Number(cat.category_id)&&!seen.has(Number(s.skill_id)));skills.forEach(s=>seen.add(Number(s.skill_id)));if(!skills.length)return'';return '<section class="assessment-category"><h3>'+h(cat.name)+'</h3><div class="table-card"><table><thead><tr><th>Skill</th><th>Description</th><th>Ability</th><th>Interest</th></tr></thead><tbody>'+skills.map(s=>{const r=ratingMap.get(Number(s.skill_id))||{};return '<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td><select name="ability_'+s.skill_id+'" '+(participant.status==='submitted'?'disabled':'')+'>'+options(r.self_ability)+'</select></td><td><select name="interest_'+s.skill_id+'" '+(participant.status==='submitted'?'disabled':'')+'>'+options(r.self_interest)+'</select></td></tr>'}).join('')+'</tbody></table></div></section>'}).join('');return cats?'<section class="assessment-matrix"><h2>'+h(m.matrix_name)+'</h2>'+cats+'</section>':''}).join('');
+ const tabs=cycles.length>1?'<div class="action-bar">'+cycles.map(x=>'<a class="button '+(Number(x.id)===Number(cycle.id)?'':'secondary')+'" href="/pdp/my-skills?cycle='+x.id+'">'+h(x.name)+'</a>').join('')+'</div>':'';
+ const status='<span class="status-badge '+(participant.status==='submitted'?'status-active':'')+'">'+h(participant.status.replace('_',' '))+'</span>',actions=participant.status==='submitted'?'<div class="notice section-gap"><strong>Submitted.</strong> Your self-assessment is locked for this cycle.</div>':'<div class="action-bar section-gap"><button class="secondary" name="action" value="save">Save Draft</button><button name="action" value="submit">Submit Assessment</button></div>';
+ return appPage('My Skills','Rate your current ability and your interest in each skill.',tabs+'<div class="card section-gap"><strong>'+h(cycle.name)+'</strong> · '+status+(cycle.due_date?' <span class="muted">Due '+h(cycle.due_date)+'</span>':'')+'</div>'+scaleHtml+'<form method="post">'+matricesHtml+actions+'</form>',user,'PDP My Skills',db);
+}
 async function pdpPlaceholder(user,title,message,active){
   return appPage(title,message,'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
 }
 
-async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
+async function outstandingPdpCount(db,userId){return Number((await row(db,\"SELECT COUNT(*) c FROM pdp_cycle_participants p JOIN pdp_cycles c ON c.id=p.cycle_id WHERE p.employee_id=? AND c.status='published' AND p.status<>'submitted'\",userId))?.c||0);}\nasync function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
 function mailboxHtml(count) { return `<a id="notification-mailbox" href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉<span id="notification-badge" style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px;${count ? '' : 'display:none;'}">${count > 9 ? '9+' : count}</span></a>`; }
 function notificationPollScript() { return `<script>(()=>{const refresh=async()=>{if(document.hidden)return;try{const r=await fetch('/api/notifications/unread-count',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();const b=document.getElementById('notification-badge');if(!b)return;const n=Number(d.unread)||0;b.textContent=n>9?'9+':String(n);b.style.display=n?'':'none';}catch(_){}};setInterval(refresh,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});})();</script>`; }
 
@@ -467,7 +490,7 @@ function passwordForm(target, message = '') {
 async function appPage(title, description, content, user, active = '', db = null) {
   const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
   const count = db ? await unreadCount(db, user.id) : 0;
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}${modalScript()}${navTreeScript()}</body></html>`;
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active, pdpOutstanding)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}${modalScript()}${navTreeScript()}</body></html>`;
   return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
@@ -1084,7 +1107,7 @@ export default {
       if (/^\/pdp\/ability\/[1-5]\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditAbilityPage(request,env.DB,user,Number(path.split('/')[3]));
       if (/^\/pdp\/categories\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditCategoryPage(request,env.DB,user,Number(path.split('/')[3]));
       if (/^\/pdp\/skills\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditSkillPage(request,env.DB,user,Number(path.split('/')[3]));
-      if (path==='/pdp/my-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'My Skills','Complete and review your PDP skills assessment.','PDP My Skills');
+      if (path==='/pdp/my-skills' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMySkillsPage(request,env.DB,user);
       if (path==='/pdp/team-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'Team Skills','Review skills assessments for employees in your management scope.','PDP Team Skills');
       if (path==='/gatekeepers' && request.method.toUpperCase()==='GET') return gatekeepersPage(request,env.DB,user);
       if (/^\/gatekeepers\/\d+\/member\/\d+\/move$/.test(path) && request.method.toUpperCase()==='POST') { const p=path.split('/'); return gatekeeperMove(request,env.DB,user,Number(p[2]),Number(p[4])); }
