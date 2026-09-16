@@ -124,7 +124,7 @@ function nav(user, active = '', pdpOutstanding = 0) {
     ]},
     {name:'PDP', items:[
       ['My Skills','/pdp/my-skills','PDP My Skills'],
-      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],...((user.isManager||user.isTeamLeader)?[['Team Assessments','/pdp/team-assessments','PDP Team Assessments']]:[]),['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
+      ...(isAdmin ? [...((user.isManager||user.isTeamLeader)?[['Team Assessments','/pdp/team-assessments','PDP Team Assessments']]:[]),['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
     ]},
     ...(isAdmin ? [{name:'Administration', items:[
       ['Leave Requests','/leave-requests','Leave Requests'],
