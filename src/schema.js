@@ -180,6 +180,26 @@ const V19_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='19' WHERE key='schema_version'"
 ];
 
+const V20_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS pdp_skills (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT)",
+ "CREATE TABLE IF NOT EXISTS pdp_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, display_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT)",
+ "CREATE TABLE IF NOT EXISTS pdp_ability_scale (score INTEGER PRIMARY KEY CHECK(score BETWEEN 1 AND 5), level TEXT NOT NULL, explanation TEXT NOT NULL, updated_at TEXT)",
+ "INSERT OR IGNORE INTO pdp_ability_scale(score,level,explanation) VALUES(1,'Low','Unable to perform and little to no experience')",
+ "INSERT OR IGNORE INTO pdp_ability_scale(score,level,explanation) VALUES(2,'Basic','Limited in knowledge and ability. Would require help and assistance from others.')",
+ "INSERT OR IGNORE INTO pdp_ability_scale(score,level,explanation) VALUES(3,'Demonstrating','Has decent experience but needs help from time to time.')",
+ "INSERT OR IGNORE INTO pdp_ability_scale(score,level,explanation) VALUES(4,'Proficient','Capable and demonstrates proficiency. Can work with little help or assistance.')",
+ "INSERT OR IGNORE INTO pdp_ability_scale(score,level,explanation) VALUES(5,'Experienced','Fully capable, experienced and needs no assistance. Sought for by others to help and able to lead / train.')",
+ "CREATE TABLE IF NOT EXISTS pdp_matrices (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT)",
+ "CREATE TABLE IF NOT EXISTS pdp_matrix_teams (matrix_id INTEGER NOT NULL, team_id INTEGER NOT NULL, PRIMARY KEY(matrix_id,team_id), FOREIGN KEY(matrix_id) REFERENCES pdp_matrices(id) ON DELETE CASCADE, FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE)",
+ "CREATE TABLE IF NOT EXISTS pdp_matrix_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, matrix_id INTEGER NOT NULL, category_id INTEGER NOT NULL, display_order INTEGER NOT NULL DEFAULT 0, UNIQUE(matrix_id,category_id), FOREIGN KEY(matrix_id) REFERENCES pdp_matrices(id) ON DELETE CASCADE, FOREIGN KEY(category_id) REFERENCES pdp_categories(id))",
+ "CREATE TABLE IF NOT EXISTS pdp_matrix_skills (id INTEGER PRIMARY KEY AUTOINCREMENT, matrix_id INTEGER NOT NULL, category_id INTEGER, skill_id INTEGER NOT NULL, display_order INTEGER NOT NULL DEFAULT 0, UNIQUE(matrix_id,skill_id), FOREIGN KEY(matrix_id) REFERENCES pdp_matrices(id) ON DELETE CASCADE, FOREIGN KEY(category_id) REFERENCES pdp_categories(id), FOREIGN KEY(skill_id) REFERENCES pdp_skills(id))",
+ "CREATE TABLE IF NOT EXISTS pdp_cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', start_date TEXT, due_date TEXT, created_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, published_at TEXT, closed_at TEXT, source_cycle_id INTEGER, FOREIGN KEY(created_by) REFERENCES employees(id), FOREIGN KEY(source_cycle_id) REFERENCES pdp_cycles(id))",
+ "CREATE TABLE IF NOT EXISTS pdp_cycle_matrices (id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id INTEGER NOT NULL, source_matrix_id INTEGER, team_id INTEGER NOT NULL, matrix_name TEXT NOT NULL, matrix_snapshot TEXT NOT NULL, UNIQUE(cycle_id,team_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id) ON DELETE CASCADE, FOREIGN KEY(team_id) REFERENCES teams(id))",
+ "CREATE TABLE IF NOT EXISTS pdp_skill_assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id INTEGER NOT NULL, employee_id INTEGER NOT NULL, skill_id INTEGER NOT NULL, self_ability INTEGER, self_interest INTEGER, management_ability INTEGER, management_interest INTEGER, management_assessor_id INTEGER, self_updated_at TEXT, management_updated_at TEXT, UNIQUE(cycle_id,employee_id,skill_id), FOREIGN KEY(cycle_id) REFERENCES pdp_cycles(id), FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(skill_id) REFERENCES pdp_skills(id), FOREIGN KEY(management_assessor_id) REFERENCES employees(id))",
+ "CREATE TABLE IF NOT EXISTS pdp_skill_assessment_history (id INTEGER PRIMARY KEY AUTOINCREMENT, assessment_id INTEGER NOT NULL, actor_id INTEGER NOT NULL, rating_type TEXT NOT NULL, ability INTEGER, interest INTEGER, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(assessment_id) REFERENCES pdp_skill_assessments(id), FOREIGN KEY(actor_id) REFERENCES employees(id))",
+ "UPDATE app_meta SET value='20' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -218,5 +238,6 @@ export async function ensureSchema(db) {
   if (version < 16) { await applyStatements(db, V16_SCHEMA_STATEMENTS); version = 16; }
   if (version < 17) { await applyStatements(db, V17_SCHEMA_STATEMENTS); version = 17; }
   if (version < 18) { await applyStatements(db, V18_SCHEMA_STATEMENTS); version = 18; }
-  if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); }
+  if (version < 19) { await applyStatements(db, V19_SCHEMA_STATEMENTS, true); version = 19; }
+  if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); }
 }
