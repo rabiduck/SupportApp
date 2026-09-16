@@ -330,6 +330,60 @@ async function pdpEditAbilityPage(request,db,user,score){
   const content='<div class="form-card"><form method="post"><label>Score<input value="'+item.score+'" disabled></label><label>Level<input name="level" value="'+h(item.level)+'" required maxlength="80"></label><label>Explanation<textarea name="explanation" rows="5" required maxlength="750">'+h(item.explanation)+'</textarea></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
   return appPage('Edit Ability Level','Define what score '+item.score+' means when employees and managers assess ability.',content,user,'PDP Configuration',db);
 }
+async function pdpCyclesPage(db,user){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const cycles=await rows(db,`SELECT c.id,c.name,c.status,c.start_date,c.due_date,c.published_at,m.name matrix_name,
+    COUNT(p.employee_id) participants FROM pdp_cycles c LEFT JOIN pdp_matrices m ON m.id=c.source_matrix_id
+    LEFT JOIN pdp_cycle_participants p ON p.cycle_id=c.id GROUP BY c.id ORDER BY c.created_at DESC,c.id DESC`);
+  const table=cycles.length?'<div class="table-card"><table><thead><tr><th>Cycle</th><th>Matrix</th><th>Dates</th><th>Participants</th><th>Status</th><th></th></tr></thead><tbody>'+cycles.map(x=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+h(x.matrix_name||'—')+'</td><td>'+h(x.start_date||'—')+(x.due_date?' → '+h(x.due_date):'')+'</td><td>'+x.participants+'</td><td>'+h(String(x.status).replace('_',' '))+'</td><td><a class="button secondary" href="/pdp/cycles/'+x.id+'/edit">'+(x.status==='draft'?'Edit':'View')+'</a></td></tr>').join('')+'</tbody></table></div>':'<div class="empty">No PDP cycles have been created yet.</div>';
+  return appPage('PDP Cycles','Create assessment rounds from reusable skills matrices and publish them to staff.','<div class="action-bar"><a class="button" href="/pdp/cycles/new">Create Cycle</a></div><div class="section-gap">'+table+'</div>',user,'PDP Configuration',db);
+}
+async function pdpCyclePage(request,db,user,id){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const matrices=await rows(db,'SELECT id,name FROM pdp_matrices WHERE is_active=1 ORDER BY name');
+  let item={name:'',source_matrix_id:'',start_date:'',due_date:'',status:'draft'},selected=new Set(),eligible=[];
+  if(id){
+    item=await row(db,'SELECT * FROM pdp_cycles WHERE id=?',id); if(!item)return accessPage('Cycle Not Found','That PDP cycle does not exist.',404);
+    const ps=await rows(db,'SELECT employee_id FROM pdp_cycle_participants WHERE cycle_id=?',id); selected=new Set(ps.map(x=>Number(x.employee_id)));
+  }
+  const matrixId=Number(new URL(request.url).searchParams.get('matrix')||item.source_matrix_id||0);
+  if(matrixId) eligible=await rows(db,`SELECT DISTINCT e.id,e.display_name,t.name team_name FROM employees e JOIN teams t ON t.id=e.team_id JOIN pdp_matrix_teams mt ON mt.team_id=e.team_id WHERE mt.matrix_id=? AND e.is_active=1 ORDER BY t.name,e.display_name`,matrixId);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),name=String(form.get('name')||'').trim(),sourceMatrixId=Number(form.get('source_matrix_id')),start=String(form.get('start_date')||''),due=String(form.get('due_date')||''),employeeIds=form.getAll('employee_id').map(Number).filter(Number.isInteger);
+    if(!name||!sourceMatrixId)return accessPage('Invalid Cycle','A cycle name and matrix are required.',400);
+    if(due&&start&&due<start)return accessPage('Invalid Dates','Due date cannot be before the start date.',400);
+    if(!id){const r=await db.prepare('INSERT INTO pdp_cycles(name,status,start_date,due_date,created_by,source_matrix_id) VALUES(?,?,?,?,?,?)').bind(name,'draft',start||null,due||null,user.id,sourceMatrixId).run();id=Number(r.meta.last_row_id);}
+    else {if(item.status!=='draft')return accessPage('Cycle Locked','Published PDP cycles cannot be reconfigured.',400);await db.prepare('UPDATE pdp_cycles SET name=?,start_date=?,due_date=?,source_matrix_id=? WHERE id=?').bind(name,start||null,due||null,sourceMatrixId,id).run();}
+    await db.prepare('DELETE FROM pdp_cycle_participants WHERE cycle_id=?').bind(id).run();
+    for(const eid of employeeIds)await db.prepare("INSERT INTO pdp_cycle_participants(cycle_id,employee_id,status) VALUES(?,?,'not_started')").bind(id,eid).run();
+    return new Response(null,{status:303,headers:{Location:'/pdp/cycles/'+id+'/edit'}});
+  }
+  if(id&&item.status!=='draft'){
+    const ps=await rows(db,`SELECT e.display_name,t.name team_name,p.status FROM pdp_cycle_participants p JOIN employees e ON e.id=p.employee_id JOIN teams t ON t.id=e.team_id WHERE p.cycle_id=? ORDER BY t.name,e.display_name`,id);
+    return appPage('PDP Cycle · '+item.name,'Published cycle details.','<div class="card"><p><strong>Matrix:</strong> '+h((matrices.find(m=>Number(m.id)===Number(item.source_matrix_id))||{}).name||'—')+' &nbsp; <strong>Status:</strong> '+h(item.status)+'</p><p><strong>Start:</strong> '+h(item.start_date||'—')+' &nbsp; <strong>Due:</strong> '+h(item.due_date||'—')+'</p></div><div class="table-card section-gap"><table><thead><tr><th>Employee</th><th>Team</th><th>Status</th></tr></thead><tbody>'+ps.map(p=>'<tr><td><strong>'+h(p.display_name)+'</strong></td><td>'+h(p.team_name)+'</td><td>'+h(p.status.replace('_',' '))+'</td></tr>').join('')+'</tbody></table></div><div class="action-bar section-gap"><a class="button secondary" href="/pdp/cycles">Back</a></div>',user,'PDP Configuration',db);
+  }
+  const opts=matrices.map(m=>'<option value="'+m.id+'" '+(Number(m.id)===matrixId?'selected':'')+'>'+h(m.name)+'</option>').join('');
+  const people=eligible.length?eligible.map(e=>'<label class="check-row"><input type="checkbox" name="employee_id" value="'+e.id+'" '+((!id||selected.has(Number(e.id)))?'checked':'')+'> <strong>'+h(e.display_name)+'</strong> <span class="muted">· '+h(e.team_name)+'</span></label>').join(''):'<div class="empty">Choose a matrix and load its eligible employees.</div>';
+  const content='<div class="form-card"><form method="get" class="cycle-matrix-picker"><label>Matrix<select name="matrix" onchange="this.form.submit()"><option value="">— Select matrix —</option>'+opts+'</select></label></form><form method="post"><input type="hidden" name="source_matrix_id" value="'+(matrixId||'')+'"><label>Cycle Name<input name="name" value="'+h(item.name)+'" required maxlength="120"></label><div class="form-grid"><label>Start Date<input type="date" name="start_date" value="'+h(item.start_date||'')+'"></label><label>Due Date<input type="date" name="due_date" value="'+h(item.due_date||'')+'"></label></div><fieldset><legend>Participants</legend>'+people+'</fieldset><div class="action-bar"><button type="submit">Save Draft</button><a class="button secondary" href="/pdp/cycles">Cancel</a></div></form></div>'+(id?'<form method="post" action="/pdp/cycles/'+id+'/publish" class="section-gap"><button type="submit">Publish Cycle</button> <span class="muted">Publishing freezes the matrix and ability scale for this assessment round.</span></form>':'';
+  return appPage(id?'Edit PDP Cycle':'Create PDP Cycle','Select a matrix, choose participating staff and prepare the assessment round.',content,user,'PDP Configuration',db);
+}
+async function pdpCyclePublish(request,db,user,id){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const cycle=await row(db,"SELECT * FROM pdp_cycles WHERE id=? AND status='draft'",id);if(!cycle)return accessPage('Cycle Not Available','Only draft cycles can be published.',400);
+  const participants=await rows(db,'SELECT employee_id FROM pdp_cycle_participants WHERE cycle_id=?',id);if(!participants.length)return accessPage('No Participants','Add at least one employee before publishing.',400);
+  const cats=await rows(db,'SELECT mc.category_id,mc.display_order,c.name,c.description FROM pdp_matrix_categories mc JOIN pdp_categories c ON c.id=mc.category_id WHERE mc.matrix_id=? ORDER BY mc.display_order,c.name',cycle.source_matrix_id);
+  const skills=await rows(db,'SELECT ms.category_id,ms.skill_id,ms.display_order,s.name,s.description FROM pdp_matrix_skills ms JOIN pdp_skills s ON s.id=ms.skill_id WHERE ms.matrix_id=? ORDER BY ms.category_id,ms.display_order,s.name',cycle.source_matrix_id);
+  if(!skills.length)return accessPage('Empty Matrix','Add at least one skill to the matrix before publishing.',400);
+  const scale=await rows(db,'SELECT score,level,explanation FROM pdp_ability_scale ORDER BY score');
+  const matrix=await row(db,'SELECT name FROM pdp_matrices WHERE id=?',cycle.source_matrix_id);
+  const teamIds=await rows(db,'SELECT DISTINCT e.team_id FROM pdp_cycle_participants p JOIN employees e ON e.id=p.employee_id WHERE p.cycle_id=?',id);
+  const snapshot=JSON.stringify({categories:cats,skills});
+  for(const t of teamIds)await db.prepare('INSERT OR REPLACE INTO pdp_cycle_matrices(cycle_id,source_matrix_id,team_id,matrix_name,matrix_snapshot) VALUES(?,?,?,?,?)').bind(id,cycle.source_matrix_id,t.team_id,matrix?.name||'Skills Matrix',snapshot).run();
+  for(const p of participants)for(const s of skills)await db.prepare('INSERT OR IGNORE INTO pdp_skill_assessments(cycle_id,employee_id,skill_id) VALUES(?,?,?)').bind(id,p.employee_id,s.skill_id).run();
+  await db.prepare("UPDATE pdp_cycles SET status='published',published_at=CURRENT_TIMESTAMP,ability_scale_snapshot=? WHERE id=?").bind(JSON.stringify(scale),id).run();
+  for(const p of participants)await createNotification(db,p.employee_id,'pdp_cycle','PDP assessment available',cycle.name+' is ready for your self-assessment.','/pdp/my-skills');
+  return new Response(null,{status:303,headers:{Location:'/pdp/cycles/'+id+'/edit'}});
+}
 async function pdpPlaceholder(user,title,message,active){
   return appPage(title,message,'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
 }
@@ -987,6 +1041,10 @@ export default {
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
+      if (path==='/pdp/cycles' && request.method.toUpperCase()==='GET') return pdpCyclesPage(env.DB,user);
+      if (path==='/pdp/cycles/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,null);
+      if (/^\/pdp\/cycles\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,Number(path.split('/')[3]));
+      if (/^\/pdp\/cycles\/\d+\/publish$/.test(path) && request.method.toUpperCase()==='POST') return pdpCyclePublish(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/pdp/matrices/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpMatrixPage(request,env.DB,user,null);
       if (/^\/pdp\/matrices\/\d+\/categories$/.test(path) && request.method.toUpperCase()==='POST') return pdpMatrixCategoryAction(request,env.DB,user,Number(path.split('/')[3]),null,'add');
       if (/^\/pdp\/matrices\/\d+\/skills$/.test(path) && request.method.toUpperCase()==='POST') return pdpMatrixSkillAction(request,env.DB,user,Number(path.split('/')[3]),null,'add');
