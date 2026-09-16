@@ -166,11 +166,17 @@ function activeForPath(path) {
 async function pdpConfigPage(db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
   const skills=await rows(db,'SELECT id,name,description,is_active FROM pdp_skills ORDER BY is_active DESC,name');
+  const categories=await rows(db,'SELECT id,name,description,is_active,display_order FROM pdp_categories ORDER BY is_active DESC,display_order,name');
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
+  const categoryTable=categories.length
+    ? '<table><thead><tr><th>Category</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+categories.map(x=>'<tr><td><strong>'+h(x.name)+'</strong></td><td>'+h(x.description||'—')+'</td><td>'+(x.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/categories/'+x.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
+    : '<div class="empty">No categories configured yet.</div>';
   const content=''
-    +'<div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
+    +'<h2>Skills</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
+    +'<h2 class="section-gap">Categories</h2><div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-category">Add Category</button></div><div class="table-card">'+categoryTable+'</div>'
+    +'<dialog class="app-modal" id="add-pdp-category"><div class="modal-head"><h2>Add Category</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/categories"><label>Category Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Category</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>'
     +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
   return appPage('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.',content,user,'PDP Configuration',db);
 }
@@ -195,6 +201,27 @@ async function pdpEditSkillPage(request,db,user,id){
   const content='<div class="page-header"><div><div class="page-title">Edit Skill</div><div class="page-description">Update the reusable skill definition. Existing historical PDP snapshots remain independent.</div></div></div>'
     +'<div class="form-card"><form method="post"><label>Skill Name<input name="name" value="'+h(skill.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(skill.description||'')+'</textarea></label><label>Status<select name="is_active"><option value="1" '+(skill.is_active?'selected':'')+'>Active</option><option value="0" '+(!skill.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
   return appPage('Edit Skill','Update the reusable skill definition. Existing historical PDP snapshots remain independent.',content,user,'PDP Configuration',db);
+}
+async function pdpCreateCategory(request,db,user){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim();
+  if(!name) return accessPage('Invalid Category','A category name is required.',400);
+  try { await db.prepare('INSERT INTO pdp_categories(name,description,display_order) VALUES(?,?,COALESCE((SELECT MAX(display_order)+1 FROM pdp_categories),0))').bind(name,description||null).run(); }
+  catch(e){ if(String(e).includes('UNIQUE')) return accessPage('Category Already Exists','A category with that name already exists.',400); throw e; }
+  return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+}
+async function pdpEditCategoryPage(request,db,user,id){
+  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const item=await row(db,'SELECT * FROM pdp_categories WHERE id=?',id);
+  if(!item) return accessPage('Category Not Found','That category does not exist.',404);
+  if(request.method.toUpperCase()==='POST'){
+    const form=await request.formData(),name=String(form.get('name')||'').trim(),description=String(form.get('description')||'').trim(),active=form.get('is_active')==='1'?1:0;
+    if(!name) return accessPage('Invalid Category','A category name is required.',400);
+    await db.prepare('UPDATE pdp_categories SET name=?,description=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,description||null,active,id).run();
+    return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
+  }
+  const content='<div class="form-card"><form method="post"><label>Category Name<input name="name" value="'+h(item.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(item.description||'')+'</textarea></label><label>Status<select name="is_active"><option value="1" '+(item.is_active?'selected':'')+'>Active</option><option value="0" '+(!item.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
+  return appPage('Edit Category','Update the reusable PDP category.',content,user,'PDP Configuration',db);
 }
 async function pdpPlaceholder(user,title,message,active){
   return appPage(title,message,'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
@@ -854,6 +881,8 @@ export default {
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
       if (path==='/pdp/skills' && request.method.toUpperCase()==='POST') return pdpCreateSkill(request,env.DB,user);
+      if (path==='/pdp/categories' && request.method.toUpperCase()==='POST') return pdpCreateCategory(request,env.DB,user);
+      if (/^\/pdp\/categories\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditCategoryPage(request,env.DB,user,Number(path.split('/')[3]));
       if (/^\/pdp\/skills\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpEditSkillPage(request,env.DB,user,Number(path.split('/')[3]));
       if (path==='/pdp/my-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'My Skills','Complete and review your PDP skills assessment.','PDP My Skills');
       if (path==='/pdp/team-skills' && request.method.toUpperCase()==='GET') return pdpPlaceholder(user,'Team Skills','Review skills assessments for employees in your management scope.','PDP Team Skills');
