@@ -1124,7 +1124,7 @@ export default {
 
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
       if (path==='/pdp/team-assessments' && request.method.toUpperCase()==='GET') return pdpTeamAssessmentsPage(request,env.DB,user);
-      if (/^\\/pdp\\/team-assessments\\/\\d+\\/\\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) { const p=path.split('/'); return pdpTeamAssessmentsPage(request,env.DB,user,Number(p[3]),Number(p[4])); }
+      if (/^\/pdp\/team-assessments\/\d+\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) { const p=path.split('/'); return pdpTeamAssessmentsPage(request,env.DB,user,Number(p[3]),Number(p[4])); }
       if (path==='/pdp/cycles' && request.method.toUpperCase()==='GET') return pdpCyclesPage(env.DB,user);
       if (path==='/pdp/cycles/new' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,null);
       if (/^\/pdp\/cycles\/\d+\/edit$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return pdpCyclePage(request,env.DB,user,Number(path.split('/')[3]));
