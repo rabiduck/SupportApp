@@ -124,7 +124,7 @@ function nav(user, active = '') {
     ]},
     {name:'PDP', items:[
       ['My Skills','/pdp/my-skills','PDP My Skills'],
-      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
+      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
     ]},
     ...(isAdmin ? [{name:'Administration', items:[
       ['Leave Requests','/leave-requests','Leave Requests'],
@@ -145,6 +145,7 @@ function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-g
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
+  if (path.startsWith('/pdp/cycles')) return 'PDP Cycles';
   if (path.startsWith('/pdp/config') || path.startsWith('/pdp/skills')) return 'PDP Configuration';
   if (path.startsWith('/pdp/team-skills')) return 'PDP Team Skills';
   if (path.startsWith('/pdp/my-skills')) return 'PDP My Skills';
