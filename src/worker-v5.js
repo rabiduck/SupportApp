@@ -491,6 +491,7 @@ function passwordForm(target, message = '') {
 async function appPage(title, description, content, user, active = '', db = null) {
   const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
   const count = db ? await unreadCount(db, user.id) : 0;
+  const pdpOutstanding = db ? await outstandingPdpCount(db, user.id) : 0;
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active, pdpOutstanding)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}${modalScript()}${navTreeScript()}</body></html>`;
   return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
