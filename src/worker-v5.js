@@ -124,7 +124,7 @@ function nav(user, active = '', pdpOutstanding = 0) {
     ]},
     {name:'PDP', items:[
       ['My Skills','/pdp/my-skills','PDP My Skills'],
-      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],['Team Assessments','/pdp/team-assessments','PDP Team Assessments'],['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
+      ...(isAdmin ? [['Team Skills','/pdp/team-skills','PDP Team Skills'],...((user.isManager||user.isTeamLeader)?[['Team Assessments','/pdp/team-assessments','PDP Team Assessments']]:[]),['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
     ]},
     ...(isAdmin ? [{name:'Administration', items:[
       ['Leave Requests','/leave-requests','Leave Requests'],
@@ -333,11 +333,11 @@ async function pdpEditAbilityPage(request,db,user,score){
   return appPage('Edit Ability Level','Define what score '+item.score+' means when employees and managers assess ability.',content,user,'PDP Configuration',db);
 }
 async function pdpTeamAssessmentsPage(request,db,user,employeeId=null,cycleId=null){
-  if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
-  const teamFilter=user.isTeamLeader&&!user.isManager&&!user.isSystemAdmin?user.managedTeamIds:[];
+  if (!(user.isManager || user.isTeamLeader)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+  const teamFilter=user.isTeamLeader&&!user.isManager?user.managedTeamIds:[];
   if(employeeId&&cycleId){
     const employee=await row(db,'SELECT e.id,e.display_name,e.team_id,t.name team_name FROM employees e JOIN teams t ON t.id=e.team_id WHERE e.id=?',employeeId);
-    if(!employee|| (teamFilter.length&&!teamFilter.includes(Number(employee.team_id))))return accessPage('Access Denied','You cannot assess this employee.',403);
+    if(!employee|| (user.isTeamLeader&&!user.isManager&&!teamFilter.includes(Number(employee.team_id))))return accessPage('Access Denied','You cannot assess this employee.',403);
     const cycle=await row(db,`SELECT c.*,p.status participant_status FROM pdp_cycles c JOIN pdp_cycle_participants p ON p.cycle_id=c.id WHERE c.id=? AND p.employee_id=? AND c.status='published'`,cycleId,employeeId);
     if(!cycle)return accessPage('Assessment Not Found','That published employee assessment does not exist.',404);
     if(request.method.toUpperCase()==='POST'){
