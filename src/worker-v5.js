@@ -169,10 +169,10 @@ async function pdpConfigPage(db,user){
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
-  const content=pageHeader('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.')
+  const content='<div class="page-header"><div><div class="page-title">PDP Configuration</div><div class="page-description">Maintain the reusable skills catalogue used to build PDP matrices.</div></div></div>'
     +'<div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
     +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
-  return htmlResponse('PDP Configuration',content,user,'PDP Configuration');
+  return appPage('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.',content,user,'PDP Configuration',db);
 }
 async function pdpCreateSkill(request,db,user){
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
@@ -192,12 +192,12 @@ async function pdpEditSkillPage(request,db,user,id){
     await db.prepare('UPDATE pdp_skills SET name=?,description=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(name,description||null,active,id).run();
     return new Response(null,{status:303,headers:{Location:'/pdp/config'}});
   }
-  const content=pageHeader('Edit Skill','Update the reusable skill definition. Existing historical PDP snapshots remain independent.')
+  const content='<div class="page-header"><div><div class="page-title">Edit Skill</div><div class="page-description">Update the reusable skill definition. Existing historical PDP snapshots remain independent.</div></div></div>'
     +'<div class="form-card"><form method="post"><label>Skill Name<input name="name" value="'+h(skill.name)+'" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500">'+h(skill.description||'')+'</textarea></label><label>Status<select name="is_active"><option value="1" '+(skill.is_active?'selected':'')+'>Active</option><option value="0" '+(!skill.is_active?'selected':'')+'>Inactive</option></select></label><div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/pdp/config">Cancel</a></div></form></div>';
-  return htmlResponse('Edit Skill',content,user,'PDP Configuration');
+  return appPage('Edit Skill','Update the reusable skill definition. Existing historical PDP snapshots remain independent.',content,user,'PDP Configuration',db);
 }
 async function pdpPlaceholder(user,title,message,active){
-  return htmlResponse(title,pageHeader(title,message)+'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
+  return appPage(title,message,'<div class="empty">This part of PDP Stage 1 will become available as the matrix configuration is built.</div>',user,active);
 }
 
 async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
