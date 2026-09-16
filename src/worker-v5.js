@@ -169,7 +169,7 @@ async function pdpConfigPage(db,user){
   const table=skills.length
     ? '<table><thead><tr><th>Skill</th><th>Description</th><th>Status</th><th></th></tr></thead><tbody>'+skills.map(s=>'<tr><td><strong>'+h(s.name)+'</strong></td><td>'+h(s.description||'—')+'</td><td>'+(s.is_active?'Active':'Inactive')+'</td><td><a class="button secondary" href="/pdp/skills/'+s.id+'/edit">Edit</a></td></tr>').join('')+'</tbody></table>'
     : '<div class="empty">No skills configured yet.</div>';
-  const content='<div class="page-header"><div><div class="page-title">PDP Configuration</div><div class="page-description">Maintain the reusable skills catalogue used to build PDP matrices.</div></div></div>'
+  const content=''
     +'<div class="action-bar section-gap"><button type="button" data-modal-open="add-pdp-skill">Add Skill</button></div><div class="table-card">'+table+'</div>'
     +'<dialog class="app-modal" id="add-pdp-skill"><div class="modal-head"><h2>Add Skill</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/pdp/skills"><label>Skill Name<input name="name" required maxlength="120"></label><label>Description<textarea name="description" rows="4" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Add Skill</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>';
   return appPage('PDP Configuration','Maintain the reusable skills catalogue used to build PDP matrices.',content,user,'PDP Configuration',db);
