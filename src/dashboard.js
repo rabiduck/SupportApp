@@ -189,6 +189,18 @@ function dutyPills(duties) {
   return duties.length ? duties.map((x) => `<span class="duty-pill">${h(x)}</span>`).join(' ') : '<span class="muted">—</span>';
 }
 
+function personalDutyBadges(duties) {
+  const badges = {
+    'On Call': { icon: '📱', label: 'On Call', href: '/on-call', className: 'personal-duty-oncall' },
+    Gatekeeper: { icon: '🏰', label: 'Gatekeeper', href: '/gatekeepers', className: 'personal-duty-gatekeeper' }
+  };
+  return `<div class="personal-duty-badges" aria-label="Today’s operational duties">${duties.map((duty) => {
+    const badge = badges[duty];
+    if (!badge) return '';
+    return `<a class="personal-duty-badge ${badge.className}" href="${badge.href}" title="You are ${h(badge.label)} today"><span class="personal-duty-icon" aria-hidden="true">${badge.icon}</span><span><small>Today’s duty</small><strong>${h(badge.label)}</strong></span></a>`;
+  }).join('')}</div>`;
+}
+
 function shiftLabel(position) {
   if (!position.shift) return 'Not configured';
   if (!position.shift.is_working_day) return position.shift.name || 'Not working';
@@ -255,7 +267,7 @@ async function employeeDashboard(db, user, appPage, date, positions, onCall, gat
     row(db, `SELECT COUNT(*) c FROM leave_requests WHERE employee_id=? AND status='pending'`, user.id),
     row(db, `SELECT COUNT(*) c FROM wfh_requests WHERE employee_id=? AND status='pending'`, user.id)
   ]);
-  const todayCard = `<section class="dashboard-panel personal-today"><div class="panel-heading"><div><h2>My Day</h2><p>Your current rota and attendance position.</p></div><a href="/rota">Open rota</a></div>${position ? `<div class="personal-status"><div>${statusPill(position.state, position.tone)}<h3>${h(shiftLabel(position))}</h3><p>${position.duties.length ? `Today’s duty: ${h(position.duties.join(' and '))}` : 'No On-Call or Gatekeeper duty today.'}</p></div><a class="button secondary" href="/day?employee=${encodeURIComponent(user.display_name)}&date=${date.iso}">Day actions</a></div>` : '<div class="empty">No active rota record was found.</div>'}</section>`;
+  const todayCard = `<section class="dashboard-panel personal-today"><div class="panel-heading"><div><h2>My Day</h2><p>Your current rota and attendance position.</p></div><a href="/rota">Open rota</a></div>${position ? `<div class="personal-status"><div>${statusPill(position.state, position.tone)}<h3>${h(shiftLabel(position))}</h3>${position.duties.length ? personalDutyBadges(position.duties) : '<p>No On-Call or Gatekeeper duty today.</p>'}</div><a class="button secondary" href="/day?employee=${encodeURIComponent(user.display_name)}&date=${date.iso}">Day actions</a></div>` : '<div class="empty">No active rota record was found.</div>'}</section>`;
   const actions = `<section><h2 class="dashboard-section-title">My Actions</h2><div class="attention-grid">${attentionCard('PDP outstanding', pdp?.c, 'Complete my assessment', '/pdp/my-skills', Number(pdp?.c) ? 'warning' : '')}${attentionCard('Certifications due', certs?.c, 'Within 60 days', '/certifications', Number(certs?.c) ? 'warning' : '')}${attentionCard('Leave requests', pendingLeave?.c, 'Awaiting a decision', '/leave')}${attentionCard('WFH requests', pendingWfh?.c, 'Awaiting a decision', '/rota')}</div></section>`;
   const quick = `<section class="dashboard-panel dashboard-quick"><div class="panel-heading"><div><h2>Quick Actions</h2></div></div><div class="quick-links"><a class="button" href="/leave">Request leave</a><a class="button secondary" href="/rota">View rota</a><a class="button secondary" href="/pdp/my-skills">My PDP</a><a class="button secondary" href="/certifications">My certifications</a></div></section>`;
   return appPage(`Good ${date.hour < 12 ? 'morning' : date.hour < 18 ? 'afternoon' : 'evening'}, ${user.display_name.split(' ')[0]}`, `${date.label} · Your SupportApp overview`, `${actions}<div class="dashboard-layout section-gap">${todayCard}${upcomingPanel(upcoming, true)}</div>${quick}`, user, 'Dashboard', db);

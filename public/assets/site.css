@@ -288,6 +288,15 @@ button.compact { min-width:44px; width:44px; padding:0; }
 .personal-status { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 115px; }
 .personal-status h3 { margin: 12px 0 4px; font-size: 1.25rem; }
 .personal-status p { margin: 0; color: var(--text-light); }
+.personal-duty-badges { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
+.personal-duty-badge { display: inline-grid; grid-template-columns: 42px auto; gap: 10px; align-items: center; min-width: 165px; padding: 9px 14px 9px 10px; color: white; border-radius: var(--radius); box-shadow: 0 3px 8px rgba(0,0,0,.16); transition: transform var(--transition),box-shadow var(--transition); }
+.personal-duty-badge:hover { color: white; text-decoration: none; transform: translateY(-1px); box-shadow: 0 5px 11px rgba(0,0,0,.2); }
+.personal-duty-badge small,.personal-duty-badge strong { display: block; color: inherit; }
+.personal-duty-badge small { margin-bottom: 1px; font-size: .7rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; opacity: .82; }
+.personal-duty-badge strong { font-size: 1rem; line-height: 1.2; }
+.personal-duty-icon { display: flex; width: 42px; height: 42px; align-items: center; justify-content: center; background: rgba(255,255,255,.18); border-radius: 50%; font-size: 1.55rem; line-height: 1; }
+.personal-duty-oncall { background: var(--primary-dark); }
+.personal-duty-gatekeeper { background: #68522A; }
 .admin-health { margin-top: 0; }
 
 @media (max-width: 1180px) {
@@ -301,6 +310,7 @@ button.compact { min-width:44px; width:44px; padding:0; }
   .attention-grid,.snapshot-grid { grid-template-columns: 1fr; }
   .attention-card { min-height: 112px; }
   .personal-status { align-items: flex-start; flex-direction: column; }
+  .personal-duty-badge { flex: 1 1 165px; }
   .development-row { grid-template-columns: 1fr auto; }
   .development-row .progress-track { display: none; }
 }
