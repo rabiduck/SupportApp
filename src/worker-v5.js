@@ -10,6 +10,18 @@ const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
 
+function themeHeadScript() {
+  return `<script id="theme-bootstrap">(()=>{try{const allowed=['teal','dark','purple'];const stored=localStorage.getItem('supportapp.theme');document.documentElement.dataset.theme=allowed.includes(stored)?stored:'teal'}catch(_){document.documentElement.dataset.theme='teal'}})()</script>`;
+}
+
+function themeControlHtml() {
+  return `<label class="theme-picker" for="theme-selector"><span class="theme-picker-label">Theme</span><select id="theme-selector" aria-label="Colour theme"><option value="teal">Corporate Teal</option><option value="dark">Dark Mode</option><option value="purple">Claritas Purple</option></select></label>`;
+}
+
+function themeControlScript() {
+  return `<script id="theme-control-script">(()=>{const picker=document.getElementById('theme-selector');if(!picker)return;const allowed=['teal','dark','purple'];const current=allowed.includes(document.documentElement.dataset.theme)?document.documentElement.dataset.theme:'teal';picker.value=current;picker.addEventListener('change',()=>{const theme=allowed.includes(picker.value)?picker.value:'teal';document.documentElement.dataset.theme=theme;try{localStorage.setItem('supportapp.theme',theme)}catch(_){}})})()</script>`;
+}
+
 async function rows(db, sql, ...params) {
   const result = await db.prepare(sql).bind(...params).all();
   return result.results ?? [];
@@ -31,7 +43,7 @@ function withIdentityHeader(request, email) {
 }
 
 function simplePage(title, content, status = 200) {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">Authentication</div></header><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div></div></div>${content}</main></body></html>`;
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title>${themeHeadScript()}<link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">Authentication</div></header><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div></div></div>${content}</main></body></html>`;
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
@@ -565,22 +577,26 @@ async function outstandingPdpCount(db,userId){try{return Number((await row(db,"S
 async function unreadCount(db, userId) { return Number((await row(db, 'SELECT COUNT(*) AS c FROM notifications WHERE recipient_employee_id=? AND read_at IS NULL', userId))?.c || 0); }
 function mailboxHtml(count) { return `<a id="notification-mailbox" href="/notifications" title="Notifications" style="position:relative;color:inherit;text-decoration:none;font-size:20px;margin-right:14px">✉<span id="notification-badge" style="position:absolute;top:-9px;right:-12px;background:#e11d48;color:white;border-radius:999px;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;padding:0 3px;${count ? '' : 'display:none;'}">${count > 9 ? '9+' : count}</span></a>`; }
 function notificationPollScript() { return `<script>(()=>{const refresh=async()=>{if(document.hidden)return;try{const r=await fetch('/api/notifications/unread-count',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();const b=document.getElementById('notification-badge');if(!b)return;const n=Number(d.unread)||0;b.textContent=n>9?'9+':String(n);b.style.display=n?'':'none';}catch(_){}};setInterval(refresh,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});})();</script>`; }
+function userAreaHtml(user, count, signout = '') { return `<span class="user-identity">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</span>${themeControlHtml()}`; }
 
 async function decorateResponse(response, user, path, localAuth = false, db = null) {
   const type = response.headers.get('content-type') || '';
   if (!type.includes('text/html')) return response;
   let text = await response.text();
+  if (!text.includes('id="theme-bootstrap"')) text = text.replace('<link rel="stylesheet" href="/assets/site.css">', `${themeHeadScript()}<link rel="stylesheet" href="/assets/site.css">`);
   text = text.replace(/<nav class="side-nav">[\s\S]*?<\/nav>/, `<nav class="side-nav">${nav(user, activeForPath(path))}</nav>`);
   const signout = localAuth ? ' · <a href="/logout" style="color:inherit">Sign out</a>' : '';
   const count = db ? await unreadCount(db, user.id) : 0;
-  text = text.replace(/<div class="user-area">[\s\S]*?<\/div>/, `<div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div>`);
+  text = text.replace(/<div class="user-area">[\s\S]*?<\/div>/, `<div class="user-area">${userAreaHtml(user, count, signout)}</div>`);
   if (localAuth && path === '/employees' && (user.isManager || user.isSystemAdmin)) {
     text = text.replace(/<a class="button secondary" href="\/employees\/(\d+)\/edit">Edit<\/a>/g, (match, id) => `${match}<a class="button secondary" href="/employees/${id}/password">Password</a>`);
   }
   // Most application pages are rendered by the older workers and then decorated here,
   // so inject the live mailbox polling script during decoration as well.
   if (!text.includes('/api/notifications/unread-count')) {
-    text = text.replace('</body>', `${notificationPollScript()}${modalScript()}${navTreeScript()}</body>`);
+    text = text.replace('</body>', `${notificationPollScript()}${modalScript()}${navTreeScript()}${themeControlScript()}</body>`);
+  } else if (!text.includes('id="theme-control-script"')) {
+    text = text.replace('</body>', `${themeControlScript()}</body>`);
   }
   return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
@@ -616,7 +632,7 @@ async function appPage(title, description, content, user, active = '', db = null
   const signout = ' · <a href="/logout" style="color:inherit">Sign out</a>';
   const count = db ? await unreadCount(db, user.id) : 0;
   const pdpOutstanding = db ? await outstandingPdpCount(db, user.id) : 0;
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${mailboxHtml(count)}${h(user.display_name || user.email || user.username)} · ${h(user.primaryRole)}${signout}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active, pdpOutstanding)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}${modalScript()}${navTreeScript()}</body></html>`;
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title>${themeHeadScript()}<link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${userAreaHtml(user, count, signout)}</div></header><div class="app-shell"><nav class="side-nav">${nav(user, active, pdpOutstanding)}</nav><main class="page"><div class="page-header"><div><div class="page-title">${h(title)}</div>${description ? `<div class="page-description">${h(description)}</div>` : ''}</div></div>${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer>${notificationPollScript()}${modalScript()}${navTreeScript()}${themeControlScript()}</body></html>`;
   return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' } });
 }
 
