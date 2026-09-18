@@ -4,6 +4,7 @@ import { managerEmployees } from './manager-employees.js';
 import { authenticate } from './auth/index.js';
 import { createLocalSession, clearSessionCookie, destroyLocalSession, sessionCookie, setLocalPassword, verifyLocalPassword } from './auth/local.js';
 import { ensureSchema } from './schema.js';
+import { dashboardPage } from './dashboard.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -134,7 +135,7 @@ function nav(user, active = '', pdpOutstanding = 0) {
       ...(user.isSystemAdmin ? [['Teams','/teams','Teams'],['Leave Years','/leave-years','Leave Years'],['System Administration','/administration','Administration']] : [])
     ]}] : [])
   ];
-  const dashboard = (user.isManager || user.isSystemAdmin) ? `<a class="nav-top ${active==='Dashboard'?'active':''}" href="/">Dashboard</a>` : '';
+  const dashboard = `<a class="nav-top ${active==='Dashboard'?'active':''}" href="/">Dashboard</a>`;
   return dashboard + sections.map((section,si)=>{
     const open=section.items.some(([, ,key])=>key===active);
     return `<div class="nav-group"><button type="button" class="nav-group-toggle" data-nav-group="${si}" aria-expanded="${open?'true':'false'}"><span>${section.name}${section.name==='PDP'&&pdpOutstanding?'<span class="nav-callout">'+pdpOutstanding+'</span>':''}</span><span class="nav-chevron">›</span></button><div class="nav-children" data-nav-children="${si}" ${open?'':'hidden'}>${section.items.map(([label,href,key])=>`<a class="${active===key?'active':''}" href="${href}">${label}</a>`).join('')}</div></div>`;
@@ -1229,6 +1230,7 @@ export default {
       if (path === '/notifications' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return notificationsPage(request, env.DB, user);
       if (/^\/notifications\/\d+$/.test(path) && request.method.toUpperCase() === 'GET') return notificationOpen(request, env.DB, user, Number(path.split('/')[2]));
 
+      if (path === '/' && request.method.toUpperCase() === 'GET') return dashboardPage(env.DB, user, { appPage });
       if (path==='/pdp/config' && request.method.toUpperCase()==='GET') return pdpConfigPage(env.DB,user);
       if (path==='/pdp/team-assessments' && request.method.toUpperCase()==='GET') return pdpTeamAssessmentsPage(request,env.DB,user);
       if (/^\/pdp\/team-assessments\/\d+\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) { const p=path.split('/'); return pdpTeamAssessmentsPage(request,env.DB,user,Number(p[3]),Number(p[4])); }
