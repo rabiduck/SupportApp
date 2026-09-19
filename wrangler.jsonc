@@ -10,7 +10,7 @@
     "directory": "./public"
   },
   "triggers": {
-    "crons": ["0 7 * * *"]
+    "crons": ["*/5 * * * *"]
   },
   "d1_databases": [
     {

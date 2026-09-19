@@ -135,6 +135,11 @@ function nav(user, active = '', pdpOutstanding = 0) {
       ['On Call','/on-call','On Call'],
       ['Gatekeepers','/gatekeepers','Gatekeepers']
     ]},
+    {name:'Actions', items:[
+      ['My Actions','/actions','Scheduled Actions'],
+      ...(isAdmin ? [['Team Actions','/actions/team','Scheduled Team Actions']] : []),
+      ...(user.isSystemAdmin ? [['Schedules','/actions/schedules','Scheduled Action Configuration']] : [])
+    ]},
     {name:'PDP', items:[
       ['My Skills','/pdp/my-skills','PDP My Skills'],
       ...(isAdmin ? [...((user.isManager||user.isTeamLeader)?[['Team Assessments','/pdp/team-assessments','PDP Team Assessments']]:[]),['PDP Cycles','/pdp/cycles','PDP Cycles'],['PDP Configuration','/pdp/config','PDP Configuration']] : [])
@@ -158,6 +163,9 @@ function navTreeScript(){return `<script>(()=>{document.querySelectorAll('.nav-g
 
 function activeForPath(path) {
   if (path === '/') return 'Dashboard';
+  if (path.startsWith('/actions/schedules')) return 'Scheduled Action Configuration';
+  if (path.startsWith('/actions/team')) return 'Scheduled Team Actions';
+  if (path.startsWith('/actions')) return 'Scheduled Actions';
   if (path.startsWith('/pdp/team-assessments')) return 'PDP Team Assessments';
   if (path.startsWith('/pdp/cycles')) return 'PDP Cycles';
   if (path.startsWith('/pdp/config') || path.startsWith('/pdp/skills')) return 'PDP Configuration';

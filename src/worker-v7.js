@@ -1,7 +1,8 @@
 import workerV6 from './worker-v6.js';
 import { authenticate } from './auth/index.js';
 import { ensureSchema } from './schema.js';
-import { ensureCertificationSchema } from './certifications.js';
+import { ensureCertificationSchema, runCertificationExpirySweep } from './certifications.js';
+import { handleScheduledActionRoute, runScheduledActionSweep } from './scheduled-actions.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -69,6 +70,23 @@ async function renderCertificationPage(request, env, title, description, content
   const headers = new Headers(shellResponse.headers);
   headers.set('content-type', 'text/html; charset=UTF-8');
   return new Response(text, { status, headers });
+}
+
+async function renderScheduledActionPage(request, env, path, result) {
+  const shellUrl = new URL(path, request.url);
+  const shellRequest = new Request(shellUrl.toString(), { method: 'GET', headers: request.headers });
+  const shellResponse = await workerV6.fetch(shellRequest, env);
+  const type = shellResponse.headers.get('content-type') || '';
+  if (!type.includes('text/html')) return shellResponse;
+  let text = await shellResponse.text();
+  const title = h(result.title || 'Scheduled Actions');
+  const description = result.description ? `<div class="page-description">${h(result.description)}</div>` : '';
+  const main = `<main class="page"><div class="page-header"><div><div class="page-title">${title}</div>${description}</div></div>${result.content || ''}</main>`;
+  text = text.replace(/<title>[\s\S]*?<\/title>/, `<title>${title} · Support Portal</title>`);
+  text = text.replace(/<main class="page">[\s\S]*?<\/main>/, main);
+  const headers = new Headers(shellResponse.headers);
+  headers.set('content-type', 'text/html; charset=UTF-8');
+  return new Response(text, { status: result.status || 200, headers });
 }
 
 async function certificationTypeCreatePage(request, env, user) {
@@ -144,11 +162,26 @@ export default {
       return certificationTypeCreatePage(request, env, user);
     }
 
+    if (path.startsWith('/actions')) {
+      if (!user) return workerV6.fetch(request, env, ctx);
+      const result = await handleScheduledActionRoute(request, env.DB, user, path);
+      if (result?.kind === 'redirect') return redirect(request, result.path);
+      if (result?.kind === 'page') return renderScheduledActionPage(request, env, path, result);
+    }
+
     const response = await workerV6.fetch(request, env, ctx);
     return user ? decorateManagerCertificationActions(response, user, path) : response;
   },
 
   async scheduled(controller, env, ctx) {
-    return workerV6.scheduled(controller, env, ctx);
+    if (!env.DB) return;
+    const task = (async () => {
+      await ensureSchema(env.DB);
+      await ensureCertificationSchema(env.DB);
+      const now = new Date(Number(controller?.scheduledTime || Date.now()));
+      await Promise.all([runCertificationExpirySweep(env.DB), runScheduledActionSweep(env.DB, now)]);
+    })();
+    if (ctx?.waitUntil) ctx.waitUntil(task);
+    else await task;
   }
 };

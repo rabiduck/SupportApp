@@ -219,6 +219,18 @@ const V22_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='22' WHERE key='schema_version'"
 ];
 
+const V24_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS scheduled_action_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, instructions TEXT, recurrence_type TEXT NOT NULL CHECK(recurrence_type IN ('once','daily','weekly','monthly')), local_time TEXT NOT NULL, day_of_week INTEGER, day_of_month INTEGER, start_date TEXT NOT NULL, end_date TEXT, timezone TEXT NOT NULL DEFAULT 'Europe/London', due_after_minutes INTEGER NOT NULL DEFAULT 480, priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','critical')), assignment_type TEXT NOT NULL CHECK(assignment_type IN ('employee','team','on_call','gatekeeper')), target_employee_id INTEGER, target_team_id INTEGER, is_active INTEGER NOT NULL DEFAULT 1, created_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT, FOREIGN KEY(target_employee_id) REFERENCES employees(id), FOREIGN KEY(target_team_id) REFERENCES teams(id), FOREIGN KEY(created_by) REFERENCES employees(id))",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_schedules_active ON scheduled_action_schedules(is_active,start_date,end_date)",
+ "CREATE TABLE IF NOT EXISTS scheduled_action_instances (id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER NOT NULL, scheduled_for TEXT NOT NULL, title_snapshot TEXT NOT NULL, instructions_snapshot TEXT, priority TEXT NOT NULL, assigned_employee_id INTEGER, assigned_team_id INTEGER, status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','in_progress','completed','skipped')), due_at TEXT NOT NULL, generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, claimed_by INTEGER, claimed_at TEXT, completed_by INTEGER, completed_at TEXT, completion_notes TEXT, skipped_by INTEGER, skipped_at TEXT, skip_reason TEXT, updated_at TEXT, UNIQUE(schedule_id,scheduled_for), FOREIGN KEY(schedule_id) REFERENCES scheduled_action_schedules(id) ON DELETE CASCADE, FOREIGN KEY(assigned_employee_id) REFERENCES employees(id), FOREIGN KEY(assigned_team_id) REFERENCES teams(id), FOREIGN KEY(claimed_by) REFERENCES employees(id), FOREIGN KEY(completed_by) REFERENCES employees(id), FOREIGN KEY(skipped_by) REFERENCES employees(id))",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_instances_employee ON scheduled_action_instances(assigned_employee_id,status,due_at)",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_instances_team ON scheduled_action_instances(assigned_team_id,status,due_at)",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_instances_schedule ON scheduled_action_instances(schedule_id,scheduled_for)",
+ "CREATE TABLE IF NOT EXISTS scheduled_action_history (id INTEGER PRIMARY KEY AUTOINCREMENT, instance_id INTEGER NOT NULL, actor_id INTEGER, event_type TEXT NOT NULL, from_status TEXT, to_status TEXT, notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(instance_id) REFERENCES scheduled_action_instances(id) ON DELETE CASCADE, FOREIGN KEY(actor_id) REFERENCES employees(id))",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_history_instance ON scheduled_action_history(instance_id,created_at)",
+ "UPDATE app_meta SET value='24' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -261,5 +273,6 @@ export async function ensureSchema(db) {
   if (version < 20) { await applyStatements(db, V20_SCHEMA_STATEMENTS); version = 20; }
   if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); version = 21; }
   if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); version = 22; }
-  if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); }
+  if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); version = 23; }
+  if (version < 24) { await applyStatements(db, V24_SCHEMA_STATEMENTS); }
 }

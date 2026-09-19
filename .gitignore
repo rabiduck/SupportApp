@@ -5,3 +5,4 @@ __pycache__/
 instance/*.sqlite
 .pytest_cache/
 .vscode/
+.wrangler/
