@@ -231,6 +231,12 @@ const V24_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='24' WHERE key='schema_version'"
 ];
 
+const V25_SCHEMA_STATEMENTS = [
+ "CREATE TABLE IF NOT EXISTS closing_keyholders (employee_id INTEGER PRIMARY KEY, is_active INTEGER NOT NULL DEFAULT 1, updated_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE, FOREIGN KEY(updated_by) REFERENCES employees(id))",
+ "CREATE INDEX IF NOT EXISTS idx_closing_keyholders_active ON closing_keyholders(is_active,employee_id)",
+ "UPDATE app_meta SET value='25' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -274,5 +280,6 @@ export async function ensureSchema(db) {
   if (version < 21) { await applyStatements(db, V21_SCHEMA_STATEMENTS, true); version = 21; }
   if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); version = 22; }
   if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); version = 23; }
-  if (version < 24) { await applyStatements(db, V24_SCHEMA_STATEMENTS); }
+  if (version < 24) { await applyStatements(db, V24_SCHEMA_STATEMENTS); version = 24; }
+  if (version < 25) { await applyStatements(db, V25_SCHEMA_STATEMENTS); }
 }

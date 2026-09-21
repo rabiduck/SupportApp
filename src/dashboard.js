@@ -1,4 +1,5 @@
 import { scheduledActionAttention, teamScheduledActionAttention } from './scheduled-actions.js';
+import { closingCoverageWindow } from './closing-cover.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -203,6 +204,14 @@ function personalDutyBadges(duties) {
   }).join('')}</div>`;
 }
 
+function closingCoverPanel(coverage) {
+  if (!coverage.gaps.length) {
+    return `<section class="dashboard-panel closing-cover-panel closing-cover-ok"><div class="panel-heading"><div><h2>🔑 Closing Cover</h2><p>At least one registered keyholder is scheduled in the office until 18:00 on every remaining weekday this week and next.</p></div><a href="/keyholders">View keyholders</a></div><strong class="closing-cover-summary">Cover confirmed</strong></section>`;
+  }
+  const reason = coverage.configuredCount ? 'No registered keyholder is currently scheduled in the office until 18:00.' : 'No active keyholders have been registered.';
+  return `<section class="dashboard-panel closing-cover-panel closing-cover-gap"><div class="panel-heading"><div><h2>🔑 Closing Cover Required</h2><p>${h(reason)}</p></div><a href="/keyholders">Review keyholders</a></div><div class="closing-cover-dates">${coverage.gaps.map((x) => `<a href="/rota?week=${encodeURIComponent(x.date)}"><strong>${h(x.label)}</strong><span>No 18:00 keyholder</span></a>`).join('')}</div></section>`;
+}
+
 function shiftLabel(position) {
   if (!position.shift) return 'Not configured';
   if (!position.shift.is_working_day) return position.shift.name || 'Not working';
@@ -283,19 +292,20 @@ export async function dashboardPage(db, user, { appPage }, now = new Date()) {
   attachDuties(positions, onCall, gatekeepers);
   if (!(user.isManager || user.isTeamLeader || user.isSystemAdmin)) return employeeDashboard(db, user, appPage, date, positions, onCall, gatekeepers);
 
-  const [counts, upcoming, scheduled] = await Promise.all([
+  const [counts, upcoming, scheduled, closingCoverage] = await Promise.all([
     managerCounts(db, teamIds, date.iso),
     upcomingItems(db, employees.map((x) => Number(x.id)), date.iso),
-    teamScheduledActionAttention(db, teamIds)
+    teamScheduledActionAttention(db, teamIds),
+    closingCoverageWindow(db, date.iso)
   ]);
   const working = positions.filter((x) => x.state === 'Working' || x.state === 'WFH').length;
   const away = positions.filter((x) => ['Annual leave', 'Sickness'].includes(x.state)).length;
-  const actionCards = `<section><h2 class="dashboard-section-title">Action Required</h2><div class="attention-grid">${attentionCard('Scheduled actions', scheduled.open, scheduled.overdue ? `${scheduled.overdue} overdue` : 'Open team actions', '/actions/team', scheduled.overdue ? 'warning' : '')}${attentionCard('Leave approvals', counts.leave, 'Pending requests', '/leave-requests?status=pending&past=show', counts.leave ? 'warning' : '')}${attentionCard('WFH requests', counts.wfh, 'Pending requests', '/wfh-requests', counts.wfh ? 'warning' : '')}${attentionCard('PDP assessments', counts.pdp, 'Ready for Manager/TL input', '/pdp/team-assessments', counts.pdp ? 'warning' : '')}${attentionCard('Certifications due', counts.certs, 'Within 60 days', '/certifications/admin?status=due', counts.certs ? 'warning' : '')}</div></section>`;
+  const actionCards = `<section><h2 class="dashboard-section-title">Action Required</h2><div class="attention-grid">${attentionCard('Closing cover', closingCoverage.gaps.length, closingCoverage.gaps.length ? 'Uncovered weekdays' : 'This week and next covered', '/keyholders', closingCoverage.gaps.length ? 'warning' : '')}${attentionCard('Scheduled actions', scheduled.open, scheduled.overdue ? `${scheduled.overdue} overdue` : 'Open team actions', '/actions/team', scheduled.overdue ? 'warning' : '')}${attentionCard('Leave approvals', counts.leave, 'Pending requests', '/leave-requests?status=pending&past=show', counts.leave ? 'warning' : '')}${attentionCard('WFH requests', counts.wfh, 'Pending requests', '/wfh-requests', counts.wfh ? 'warning' : '')}${attentionCard('PDP assessments', counts.pdp, 'Ready for Manager/TL input', '/pdp/team-assessments', counts.pdp ? 'warning' : '')}${attentionCard('Certifications due', counts.certs, 'Within 60 days', '/certifications/admin?status=due', counts.certs ? 'warning' : '')}</div></section>`;
   const snapshot = `<section class="dashboard-panel team-snapshot"><div class="snapshot-grid"><div><strong>${employees.length}</strong><span>Active employees</span></div><div><strong>${working}</strong><span>Working / WFH</span></div><div><strong>${away}</strong><span>On leave / sick</span></div><div><strong>${gatekeepers.length}</strong><span>Gatekeepers today</span></div><div><strong>${onCall ? 1 : 0}</strong><span>On Call</span></div></div></section>`;
   const duties = `<section class="dashboard-panel duty-summary"><div class="panel-heading"><div><h2>Operational Duty</h2></div></div><div class="duty-summary-grid"><div><span>On Call</span><strong>${h(onCall?.display_name || 'Not configured')}</strong></div><div><span>Gatekeeper${gatekeepers.length === 1 ? '' : 's'}</span><strong>${gatekeepers.length ? gatekeepers.map((x) => `${x.display_name} (${x.team_name})`).map(h).join('<br>') : 'Not configured'}</strong></div></div></section>`;
   const quick = `<section class="dashboard-panel dashboard-quick"><div class="panel-heading"><div><h2>Quick Actions</h2></div></div><div class="quick-links"><a class="button" href="/rota">Open rota / record attendance</a><a class="button secondary" href="/actions/team">Team actions</a>${user.isSystemAdmin ? '<a class="button secondary" href="/actions/schedules">Action schedules</a>' : ''}<a class="button secondary" href="/leave-requests">Review leave</a><a class="button secondary" href="/wfh-requests">Review WFH</a><a class="button secondary" href="/certifications/admin">Team certifications</a><a class="button secondary" href="/pdp/team-assessments">Team PDP</a></div></section>`;
   const admin = user.isSystemAdmin ? await adminHealthPanel(db) : '';
   const noScope = !teamIds.length ? '<div class="notice section-gap"><strong>No managed teams assigned.</strong><br>Ask a System Administrator to add this account as a manager or team leader for at least one team.</div>' : '';
-  const content = `${actionCards}${noScope}${snapshot}<div class="dashboard-layout section-gap">${todayTeamPanel(positions)}${duties}</div><div class="dashboard-layout section-gap">${upcomingPanel(upcoming)}${await developmentPanel(db, teamIds, date.iso)}</div>${quick}${admin ? `<div class="section-gap">${admin}</div>` : ''}`;
+  const content = `${actionCards}${noScope}<div class="section-gap">${closingCoverPanel(closingCoverage)}</div>${snapshot}<div class="dashboard-layout section-gap">${todayTeamPanel(positions)}${duties}</div><div class="dashboard-layout section-gap">${upcomingPanel(upcoming)}${await developmentPanel(db, teamIds, date.iso)}</div>${quick}${admin ? `<div class="section-gap">${admin}</div>` : ''}`;
   return appPage(`Good ${date.hour < 12 ? 'morning' : date.hour < 18 ? 'afternoon' : 'evening'}, ${user.display_name.split(' ')[0]}`, `${date.label} · Support overview`, content, user, 'Dashboard', db);
 }

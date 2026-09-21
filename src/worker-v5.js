@@ -5,6 +5,7 @@ import { authenticate } from './auth/index.js';
 import { createLocalSession, clearSessionCookie, destroyLocalSession, sessionCookie, setLocalPassword, verifyLocalPassword } from './auth/local.js';
 import { ensureSchema } from './schema.js';
 import { dashboardPage } from './dashboard.js';
+import { closingCoverImpact, closingCoverOverrideControl, closingCoverWarningHtml } from './closing-cover.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -133,7 +134,8 @@ function nav(user, active = '', pdpOutstanding = 0) {
       ['Calendar','/rota','Rota'],
       ['My Requests','/leave','My Leave'],
       ['On Call','/on-call','On Call'],
-      ['Gatekeepers','/gatekeepers','Gatekeepers']
+      ['Gatekeepers','/gatekeepers','Gatekeepers'],
+      ...(isAdmin ? [['Closing Cover','/keyholders','Closing Cover']] : [])
     ]},
     {name:'Actions', items:[
       ['My Actions','/actions','Scheduled Actions'],
@@ -173,6 +175,7 @@ function activeForPath(path) {
   if (path.startsWith('/pdp/my-skills')) return 'PDP My Skills';
   if (path.startsWith('/on-call')) return 'On Call';
   if (path.startsWith('/gatekeeper')) return 'Gatekeepers';
+  if (path.startsWith('/keyholders')) return 'Closing Cover';
   if (path.startsWith('/rota')) return 'Rota';
   if (path.startsWith('/leave-requests')) return 'Leave Requests';
   if (path.startsWith('/wfh-requests')) return 'WFH Requests';
@@ -987,15 +990,21 @@ async function wfhReviewPage(request,db,user,id){
  const item=await row(db,`SELECT w.*,e.display_name,e.team_id FROM wfh_requests w JOIN employees e ON e.id=w.employee_id WHERE w.id=?`,id);
  if(!item)return errorPage('WFH request not found.',user,404);
  if(!user.managedTeamIds.includes(Number(item.team_id)))return accessPage('Access Denied','This WFH request is outside your management scope.',403);
+ const closingImpact=item.status==='pending'?await closingCoverImpact(db,{type:'wfh',employeeId:item.employee_id,startDate:item.request_date,endDate:item.request_date}):null;
+ let closingOverrideError=false;
  if(request.method.toUpperCase()==='POST'&&item.status==='pending'){
    const form=await request.formData(),decision=String(form.get('decision')||'').toLowerCase(),notes=String(form.get('manager_notes')||'').trim()||null;
    if(!['approved','rejected'].includes(decision))return errorPage('Choose Approve or Reject.',user,400);
-   await db.prepare('UPDATE wfh_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?').bind(decision,user.id,notes,id).run();
-   await createNotification(db,item.employee_id,'wfh_review',`WFH request ${decision}`,`${item.request_date}${notes?` · ${notes}`:''}`,'/rota');
-   return redirect(request,'/wfh-requests');
+   if(decision==='approved'&&closingImpact?.caused.length&&!form.has('closing_cover_override'))closingOverrideError=true;
+   else {
+     await db.prepare('UPDATE wfh_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?').bind(decision,user.id,notes,id).run();
+     await createNotification(db,item.employee_id,'wfh_review',`WFH request ${decision}`,`${item.request_date}${notes?` · ${notes}`:''}`,'/rota');
+     return redirect(request,'/wfh-requests');
+   }
  }
  const managerCancel=['pending','approved'].includes(item.status)?`<form method="post" action="/wfh/${item.id}/cancel" class="section-gap"><button class="secondary">${item.status==='pending'?'Cancel Request':'Cancel WFH'}</button></form>`:'';
- const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${managerCancel}${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
+ const closingWarning=item.status==='pending'?closingCoverWarningHtml(closingImpact,{overrideError:closingOverrideError}):'';
+ const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${managerCancel}${closingWarning}${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
  return appPage('Review WFH Request','Review a single-day WFH request.',content,user,'WFH Requests',db);
 }
 
@@ -1160,6 +1169,11 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const item = await row(db, `SELECT lr.*,e.display_name,e.team_id,t.name AS team_name,COALESCE(e.override_rota_pattern_id,t.default_rota_pattern_id) AS pattern_id,COALESCE(e.override_pattern_start_date,t.default_pattern_start_date) AS pattern_start_date,COALESCE(orp.cycle_length_weeks,trp.cycle_length_weeks,1) AS cycle_length_weeks,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN rota_patterns orp ON orp.id=e.override_rota_pattern_id LEFT JOIN rota_patterns trp ON trp.id=t.default_rota_pattern_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.id=?`, id);
   if (!item) return accessPage('Leave request not found', 'The requested leave request does not exist.', 404);
   if (!user.managedTeamIds.includes(Number(item.team_id))) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
+  const closingImpact = item.status === 'pending' ? await closingCoverImpact(db, {
+    type: 'leave', employeeId: item.employee_id, startDate: item.start_date, endDate: item.end_date,
+    startPortion: item.start_portion, endPortion: item.end_portion
+  }) : null;
+  let closingOverrideError = false;
 
   if (request.method.toUpperCase() === 'POST') {
     const form = await request.formData();
@@ -1173,10 +1187,13 @@ async function leaveRequestReviewPage(request, db, user, id) {
     }
     if (item.status !== 'pending') return redirect(request, `/leave-requests/${id}`);
     if (!['approved','rejected'].includes(decision)) return accessPage('Invalid decision', 'Choose Approve or Reject.', 400);
-    await db.prepare('UPDATE leave_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status=\'pending\'').bind(decision,user.id,notes,id).run();
-    const verb = decision === 'approved' ? 'approved' : 'rejected';
-    await createNotification(db, item.employee_id, 'leave_review', `Annual leave ${verb}`, `${item.start_date} ${item.start_portion||'FULL'}${item.end_date!==item.start_date?` → ${item.end_date} ${item.end_portion||'FULL'}`:''}${notes?` · ${notes}`:''}`, '/leave');
-    return redirect(request, '/leave-requests');
+    if (decision === 'approved' && closingImpact?.caused.length && !form.has('closing_cover_override')) closingOverrideError = true;
+    else {
+      await db.prepare('UPDATE leave_requests SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status=\'pending\'').bind(decision,user.id,notes,id).run();
+      const verb = decision === 'approved' ? 'approved' : 'rejected';
+      await createNotification(db, item.employee_id, 'leave_review', `Annual leave ${verb}`, `${item.start_date} ${item.start_portion||'FULL'}${item.end_date!==item.start_date?` → ${item.end_date} ${item.end_portion||'FULL'}`:''}${notes?` · ${notes}`:''}`, '/leave');
+      return redirect(request, '/leave-requests');
+    }
   }
 
   const start = new Date(`${item.start_date}T00:00:00Z`), end = new Date(`${item.end_date}T00:00:00Z`);
@@ -1212,9 +1229,10 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const requestCost = rotaDays.reduce((sum,d)=>sum+(d.working?(d.portion==='FULL'?1:0.5):0),0);
   const projected = balance ? balance.remaining - requestCost : null;
   const approvalWarning = item.status==='pending' && balance && projected < 0 ? `<div class="notice section-gap"><strong>⚠ Approval would create a negative balance</strong><br>This request uses ${requestCost.toFixed(1)} days. Current remaining balance is ${balance.remaining.toFixed(1)} days; after approval it would be ${projected.toFixed(1)} days. Approval is still permitted.</div>` : '';
+  const closingWarning = item.status === 'pending' ? closingCoverWarningHtml(closingImpact, { overrideError: closingOverrideError }) : '';
   const today = new Date().toISOString().slice(0,10);
-  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Manager Actions</h2><p><a class="button secondary" href="/leave-requests/${id}/edit">Modify Employee Leave</a></p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
-  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}${overlaysCard}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
+  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Manager Actions</h2><p><a class="button secondary" href="/leave-requests/${id}/edit">Modify Employee Leave</a></p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
+  const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}${closingWarning}${overlaysCard}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
 

@@ -388,6 +388,23 @@ button.compact { min-width:44px; width:44px; padding:0; }
 .personal-duty-gatekeeper { background: #68522A; }
 .admin-health { margin-top: 0; }
 
+/* Closing cover */
+.closing-cover-panel { border-left: 5px solid var(--success); margin-bottom: 18px; }
+.closing-cover-panel.closing-cover-gap { border-left-color: var(--danger); }
+.closing-cover-summary { display: inline-flex; padding: 7px 11px; color: var(--status-success-text); background: var(--status-success-background); border-radius: 999px; font-size: .84rem; }
+.closing-cover-dates { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 8px; }
+.closing-cover-dates a { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; color: var(--status-danger-text); background: var(--status-danger-background); border-radius: var(--radius); }
+.closing-cover-dates a:hover { text-decoration: none; filter: brightness(.98); }
+.closing-cover-dates span { font-size: .8rem; }
+.closing-cover-warning { max-width: 920px; margin-top: 22px; padding: 16px 18px; border-left: 5px solid var(--warning); border-radius: var(--radius); box-shadow: var(--shadow); }
+.closing-cover-warning p { margin: 7px 0; }
+.closing-cover-warning ul { margin: 8px 0; padding-left: 22px; }
+.closing-cover-warning.closing-cover-danger { color: var(--status-danger-text); background: var(--status-danger-background); border-left-color: var(--danger); }
+.closing-cover-warning.closing-cover-existing { color: var(--status-warning-text); background: var(--status-warning-background); }
+.closing-cover-override { max-width: 660px; padding: 12px 14px; color: var(--status-danger-text); background: var(--status-danger-background); border-radius: var(--radius); }
+.keyholder-heading { margin: 0; padding: 18px 20px 7px; color: var(--primary); }
+.keyholder-help { margin: 0; padding: 0 20px 16px; color: var(--text-light); }
+
 /* Scheduled internal actions */
 .schedule-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
 .schedule-actions form { margin: 0; }
