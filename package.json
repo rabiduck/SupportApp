@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:demo": "wrangler deploy --env demo",
+    "deploy:production": "wrangler deploy --env production",
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {

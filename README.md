@@ -15,11 +15,21 @@ npm install
 npx wrangler dev
 ```
 
-Deploy with:
+Deploy UAT with:
 
 ```bash
-npx wrangler deploy
+npm run deploy
 ```
+
+The demo and production deployments use explicit Wrangler environments so
+that each Worker is bound to its own D1 database:
+
+```bash
+npm run deploy:demo
+npm run deploy:production
+```
+
+Do not use the production command until the release has been approved.
 
 ## Roadmap
 
