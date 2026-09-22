@@ -237,6 +237,16 @@ const V25_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='25' WHERE key='schema_version'"
 ];
 
+const V26_SCHEMA_STATEMENTS = [
+ "ALTER TABLE scheduled_action_schedules ADD COLUMN removed_at TEXT",
+ "ALTER TABLE scheduled_action_schedules ADD COLUMN removed_by INTEGER REFERENCES employees(id)",
+ "ALTER TABLE scheduled_action_instances ADD COLUMN removed_at TEXT",
+ "ALTER TABLE scheduled_action_instances ADD COLUMN removed_by INTEGER REFERENCES employees(id)",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_schedules_owner ON scheduled_action_schedules(created_by,removed_at)",
+ "CREATE INDEX IF NOT EXISTS idx_scheduled_action_instances_removed ON scheduled_action_instances(removed_at,status)",
+ "UPDATE app_meta SET value='26' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -281,5 +291,6 @@ export async function ensureSchema(db) {
   if (version < 22) { await applyStatements(db, V22_SCHEMA_STATEMENTS); version = 22; }
   if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); version = 23; }
   if (version < 24) { await applyStatements(db, V24_SCHEMA_STATEMENTS); version = 24; }
-  if (version < 25) { await applyStatements(db, V25_SCHEMA_STATEMENTS); }
+  if (version < 25) { await applyStatements(db, V25_SCHEMA_STATEMENTS); version = 25; }
+  if (version < 26) { await applyStatements(db, V26_SCHEMA_STATEMENTS, true); }
 }

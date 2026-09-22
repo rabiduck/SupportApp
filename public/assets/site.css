@@ -409,7 +409,11 @@ button.compact { min-width:44px; width:44px; padding:0; }
 .schedule-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
 .schedule-actions form { margin: 0; }
 .schedule-actions .button,.schedule-actions button { min-width: 0; padding: 8px 11px; white-space: nowrap; }
-.action-filters { margin-bottom: 14px; }
+.action-filters { align-items: flex-end; margin-bottom: 14px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.action-filters label { min-width: 145px; margin: 0; }
+.action-filters label:has(input[name="q"]) { flex: 1 1 220px; }
+.action-filters input,.action-filters select { margin-top: 4px; }
+.action-filters button,.action-filters .button { margin-bottom: 1px; }
 .scheduled-action-detail { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(300px,.75fr); gap: 18px; align-items: start; }
 .action-detail-heading { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .scheduled-action-detail h2 { margin: 0 0 12px; }

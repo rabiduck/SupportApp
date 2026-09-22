@@ -114,7 +114,7 @@ async function notifyAssignment(db, instanceId, title, dueAt, assignment) {
       : [];
   for (const recipient of [...new Set(recipients)]) {
     await db.prepare(`INSERT INTO notifications(recipient_employee_id,notification_type,title,message,target_url)
-      VALUES(?,?,?,?,?)`).bind(recipient, 'scheduled_action', `Scheduled action ready · ${title}`, `Due ${formatDateTime(dueAt)}.`, `/actions/${instanceId}`).run();
+      VALUES(?,?,?,?,?)`).bind(recipient, 'scheduled_action', `Action ready · ${title}`, `Due ${formatDateTime(dueAt)}.`, `/actions/${instanceId}`).run();
   }
 }
 
@@ -134,7 +134,7 @@ async function generateInstance(db, schedule, scheduledFor, now = new Date()) {
 }
 
 export async function runScheduledActionSweep(db, now = new Date()) {
-  const schedules = await rows(db, `SELECT * FROM scheduled_action_schedules WHERE is_active=1 ORDER BY id`);
+  const schedules = await rows(db, `SELECT * FROM scheduled_action_schedules WHERE is_active=1 AND removed_at IS NULL ORDER BY id`);
   let generated = 0;
   for (const schedule of schedules) {
     const scheduledFor = scheduledKeyIfDue(schedule, now);
@@ -162,14 +162,15 @@ function formatDateTime(value) {
 }
 
 function effectiveStatus(instance, now = new Date()) {
+  if (instance.removed_at) return 'removed';
   if (['completed', 'skipped'].includes(instance.status)) return instance.status;
   return new Date(instance.due_at).getTime() < now.getTime() ? 'overdue' : instance.status;
 }
 
 function statusBadge(instance) {
   const status = effectiveStatus(instance);
-  const label = { open: 'Open', in_progress: 'In Progress', completed: 'Completed', skipped: 'Skipped', overdue: 'Overdue' }[status] || status;
-  const cls = status === 'completed' ? 'status-active' : status === 'overdue' ? 'status-danger' : status === 'in_progress' ? 'status-warning' : '';
+  const label = { open: 'Open', in_progress: 'In Progress', completed: 'Closed', skipped: 'Skipped', removed: 'Removed', overdue: 'Overdue' }[status] || status;
+  const cls = status === 'completed' ? 'status-active' : status === 'overdue' ? 'status-danger' : status === 'in_progress' ? 'status-warning' : status === 'removed' ? 'status-inactive' : '';
   return `<span class="status-badge ${cls}">${h(label)}</span>`;
 }
 
@@ -194,46 +195,71 @@ function assignmentLabel(item) {
   return 'Unassigned';
 }
 
-const INSTANCE_SELECT = `SELECT i.*,s.assignment_type,s.name schedule_name,
-  ae.display_name assigned_employee_name,ae.team_id assigned_employee_team_id,at.name assigned_team_name
+const INSTANCE_SELECT = `SELECT i.*,s.assignment_type,s.name schedule_name,s.created_by,
+  ae.display_name assigned_employee_name,ae.team_id assigned_employee_team_id,at.name assigned_team_name,
+  ce.display_name creator_name,ce.team_id creator_team_id
   FROM scheduled_action_instances i JOIN scheduled_action_schedules s ON s.id=i.schedule_id
-  LEFT JOIN employees ae ON ae.id=i.assigned_employee_id LEFT JOIN teams at ON at.id=i.assigned_team_id`;
+  LEFT JOIN employees ae ON ae.id=i.assigned_employee_id LEFT JOIN teams at ON at.id=i.assigned_team_id
+  LEFT JOIN employees ce ON ce.id=s.created_by`;
 
 function instanceTable(items) {
-  if (!items.length) return '<div class="empty">No scheduled actions match this view.</div>';
-  return `<div class="table-card"><table><thead><tr><th>Action</th><th>Assigned To</th><th>Scheduled</th><th>Due</th><th>Priority</th><th>Status</th></tr></thead><tbody>${items.map((item) => `<tr><td><a href="/actions/${item.id}"><strong>${h(item.title_snapshot)}</strong></a></td><td>${h(assignmentLabel(item))}</td><td>${h(formatDateTime(item.scheduled_for))}</td><td>${h(formatDateTime(item.due_at))}</td><td>${priorityBadge(item.priority)}</td><td>${statusBadge(item)}</td></tr>`).join('')}</tbody></table></div>`;
+  if (!items.length) return '<div class="empty">No actions match this view.</div>';
+  return `<div class="table-card"><table><thead><tr><th>Action</th><th>Owner</th><th>Assigned To</th><th>Scheduled</th><th>Due</th><th>Priority</th><th>Status</th></tr></thead><tbody>${items.map((item) => `<tr><td><a href="/actions/${item.id}"><strong>${h(item.title_snapshot)}</strong></a></td><td>${h(item.creator_name || 'Unknown')}</td><td>${h(assignmentLabel(item))}</td><td>${h(formatDateTime(item.scheduled_for))}</td><td>${h(formatDateTime(item.due_at))}</td><td>${priorityBadge(item.priority)}</td><td>${statusBadge(item)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
-function listFilters(active, basePath) {
-  return `<div class="action-bar action-filters">${[['open','Open'],['completed','Completed'],['all','All']].map(([value, label]) => `<a class="button ${active === value ? '' : 'secondary'}" href="${basePath}?status=${value}">${label}</a>`).join('')}</div>`;
+function instanceFilters(request) {
+  const params = new URL(request.url).searchParams;
+  const status = ['open', 'completed', 'all'].includes(params.get('status')) ? params.get('status') : 'open';
+  const priority = ['low', 'normal', 'high', 'critical'].includes(params.get('priority')) ? params.get('priority') : '';
+  return { status, priority, q: String(params.get('q') || '').trim() };
 }
 
-function filterInstances(items, filter) {
-  if (filter === 'completed') return items.filter((item) => ['completed', 'skipped'].includes(item.status));
-  if (filter === 'all') return items;
-  return items.filter((item) => !['completed', 'skipped'].includes(item.status));
+function listFilters(filters, basePath) {
+  const statusOptions = [['open','Open'],['completed','Closed'],['all','All']].map(([value, label]) => `<option value="${value}" ${selected(filters.status, value)}>${label}</option>`).join('');
+  const priorityOptions = [['','Any priority'],['low','Low'],['normal','Normal'],['high','High'],['critical','Critical']].map(([value, label]) => `<option value="${value}" ${selected(filters.priority, value)}>${label}</option>`).join('');
+  return `<form class="action-bar action-filters" method="get" action="${basePath}"><label>Status<select name="status">${statusOptions}</select></label><label>Priority<select name="priority">${priorityOptions}</select></label><label>Search<input name="q" value="${h(filters.q)}" placeholder="Title, owner or assignee"></label><button type="submit">Apply Filters</button><a class="button secondary" href="${basePath}">Reset</a></form>`;
+}
+
+function filterInstances(items, filters) {
+  let filtered = filters.status === 'completed'
+    ? items.filter((item) => ['completed', 'skipped'].includes(item.status))
+    : filters.status === 'all' ? items : items.filter((item) => !['completed', 'skipped'].includes(item.status));
+  if (filters.priority) filtered = filtered.filter((item) => item.priority === filters.priority);
+  if (filters.q) {
+    const needle = filters.q.toLowerCase();
+    filtered = filtered.filter((item) => [item.title_snapshot,item.instructions_snapshot,item.creator_name,assignmentLabel(item)].some((value) => String(value || '').toLowerCase().includes(needle)));
+  }
+  return filtered;
 }
 
 async function myActionsPage(request, db, user) {
-  const filter = String(new URL(request.url).searchParams.get('status') || 'open');
-  const items = await rows(db, `${INSTANCE_SELECT} WHERE i.assigned_employee_id=? OR (i.assigned_employee_id IS NULL AND i.assigned_team_id=?) ORDER BY CASE i.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,i.due_at DESC`, user.id, user.team_id);
-  const emptyIntro = !items.length ? '<div class="notice"><strong>No scheduled work has been generated for you.</strong><br>Schedules are deliberately empty until an administrator adds an approved recurring action.</div>' : '';
-  return page('My Actions', 'Internal scheduled work assigned directly to you or available in your team queue.', `${emptyIntro}${listFilters(filter, '/actions')}${instanceTable(filterInstances(items, filter))}`);
+  const filters = instanceFilters(request);
+  const items = await rows(db, `${INSTANCE_SELECT} WHERE i.removed_at IS NULL AND (i.assigned_team_id=? OR ae.team_id=?) ORDER BY CASE i.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,i.due_at DESC`, user.team_id, user.team_id);
+  const emptyIntro = !items.length ? '<div class="notice"><strong>No actions are currently assigned to you.</strong><br>Create a one-time handover action or a repeating operational action whenever one is needed.</div>' : '';
+  const controls = '<div class="action-bar"><a class="button" href="/actions/new">Create Action</a><a class="button secondary" href="/actions/all">All Actions</a><a class="button secondary" href="/actions/schedules">Created Actions</a></div>';
+  return page('My Actions', 'Internal work assigned directly to you or available in your team queue.', `${controls}${emptyIntro}${listFilters(filters, '/actions')}${instanceTable(filterInstances(items, filters))}`);
+}
+
+async function allActionsPage(request, db) {
+  const filters = instanceFilters(request);
+  const items = await rows(db, `${INSTANCE_SELECT} WHERE i.removed_at IS NULL ORDER BY CASE i.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,i.due_at DESC`);
+  const controls = '<div class="action-bar"><a class="button" href="/actions/new">Create Action</a><a class="button secondary" href="/actions">My Actions</a><a class="button secondary" href="/actions/schedules">Created Actions</a></div>';
+  return page('All Actions', 'Shared internal action queue. Any colleague can step in to progress or complete an action when needed.', `${controls}${listFilters(filters, '/actions/all')}${instanceTable(filterInstances(items, filters))}`);
 }
 
 async function teamActionsPage(request, db, user) {
   if (!(user.isSystemAdmin || user.isManager || user.isTeamLeader)) return page('Access Denied', '', '<div class="notice"><strong>Manager, Team Leader or System Administrator access is required.</strong></div>', 403);
-  const filter = String(new URL(request.url).searchParams.get('status') || 'open');
+  const filters = instanceFilters(request);
   let items = [];
-  if (user.isSystemAdmin) items = await rows(db, `${INSTANCE_SELECT} ORDER BY i.due_at DESC`);
+  if (user.isSystemAdmin) items = await rows(db, `${INSTANCE_SELECT} WHERE i.removed_at IS NULL ORDER BY i.due_at DESC`);
   else {
     const teamIds = [...new Set((user.managedTeamIds || []).map(Number))];
     if (teamIds.length) {
       const marks = teamIds.map(() => '?').join(',');
-      items = await rows(db, `${INSTANCE_SELECT} WHERE i.assigned_team_id IN (${marks}) OR ae.team_id IN (${marks}) ORDER BY i.due_at DESC`, ...teamIds, ...teamIds);
+      items = await rows(db, `${INSTANCE_SELECT} WHERE i.removed_at IS NULL AND (i.assigned_team_id IN (${marks}) OR ae.team_id IN (${marks})) ORDER BY i.due_at DESC`, ...teamIds, ...teamIds);
     }
   }
-  return page('Team Actions', 'Scheduled work across your managed teams.', `${listFilters(filter, '/actions/team')}${instanceTable(filterInstances(items, filter))}`);
+  return page('Team Actions', 'Internal work across your managed teams.', `<div class="action-bar"><a class="button" href="/actions/new">Create Action</a><a class="button secondary" href="/actions/all">All Actions</a><a class="button secondary" href="/actions/schedules">Created Actions</a></div>${listFilters(filters, '/actions/team')}${instanceTable(filterInstances(items, filters))}`);
 }
 
 async function scheduleOptions(db) {
@@ -253,17 +279,17 @@ function scheduleForm(item, options, message = '') {
   const weekdayOptions = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].slice(1).map((day, index) => `<option value="${index + 1}" ${selected(item.day_of_week, index + 1)}>${day}</option>`).join('');
   const hours = Math.max(.25, Number(item.due_after_minutes || 480) / 60);
   return `${message ? `<div class="notice"><strong>${h(message)}</strong></div>` : ''}<div class="form-card schedule-form"><form method="post">
-    <label>Action Name<input name="name" value="${h(item.name || '')}" maxlength="140" required autofocus></label>
+    <label>Action Title<input name="name" value="${h(item.name || '')}" maxlength="140" required autofocus></label>
     <label>Instructions<textarea name="instructions" rows="5" placeholder="Explain what must be checked, recorded or completed.">${h(item.instructions || '')}</textarea></label>
-    <div class="form-grid"><label>Recurrence<select name="recurrence_type"><option value="once" ${selected(item.recurrence_type, 'once')}>Once</option><option value="daily" ${selected(item.recurrence_type, 'daily')}>Daily</option><option value="weekly" ${selected(item.recurrence_type, 'weekly')}>Weekly</option><option value="monthly" ${selected(item.recurrence_type, 'monthly')}>Monthly</option></select></label><label>Time <span class="muted">(Europe/London)</span><input name="local_time" type="time" value="${h(item.local_time || '09:00')}" required></label></div>
+    <div class="form-grid"><label>Action Type<select name="recurrence_type"><option value="once" ${selected(item.recurrence_type, 'once')}>One time</option><option value="daily" ${selected(item.recurrence_type, 'daily')}>Repeating · Daily</option><option value="weekly" ${selected(item.recurrence_type, 'weekly')}>Repeating · Weekly</option><option value="monthly" ${selected(item.recurrence_type, 'monthly')}>Repeating · Monthly</option></select></label><label>Create Time <span class="muted">(Europe/London)</span><input name="local_time" type="time" value="${h(item.local_time || '09:00')}" required></label></div>
     <div class="form-grid"><label>Weekly Day<select name="day_of_week"><option value="">Not applicable</option>${weekdayOptions}</select></label><label>Monthly Day<input name="day_of_month" type="number" min="1" max="31" value="${h(item.day_of_month || '')}" placeholder="1–31"></label></div>
-    <div class="form-grid"><label>Start Date<input name="start_date" type="date" value="${h(item.start_date || londonParts().date)}" required></label><label>End Date <span class="muted">(optional)</span><input name="end_date" type="date" value="${h(item.end_date || '')}"></label></div>
+    <div class="form-grid"><label>Start / Create Date<input name="start_date" type="date" value="${h(item.start_date || londonParts().date)}" required></label><label>End Date <span class="muted">(repeating actions only)</span><input name="end_date" type="date" value="${h(item.end_date || '')}"></label></div>
     <div class="form-grid"><label>Due After (hours)<input name="due_after_hours" type="number" min="0.25" max="720" step="0.25" value="${hours}" required></label><label>Priority<select name="priority"><option value="low" ${selected(item.priority, 'low')}>Low</option><option value="normal" ${selected(item.priority || 'normal', 'normal')}>Normal</option><option value="high" ${selected(item.priority, 'high')}>High</option><option value="critical" ${selected(item.priority, 'critical')}>Critical</option></select></label></div>
     <label>Assignment<select name="assignment_type"><option value="employee" ${selected(item.assignment_type, 'employee')}>Named Employee</option><option value="team" ${selected(item.assignment_type, 'team')}>Team Queue</option><option value="on_call" ${selected(item.assignment_type, 'on_call')}>Current On Call Engineer</option><option value="gatekeeper" ${selected(item.assignment_type, 'gatekeeper')}>Current Gatekeeper</option></select></label>
     <div class="form-grid"><label>Employee<select name="target_employee_id"><option value="">Not applicable</option>${employeeOptions}</select></label><label>Team<select name="target_team_id"><option value="">Not applicable</option>${teamOptions}</select></label></div>
-    <p class="muted">Choose an employee for Named Employee. Choose a team for Team Queue or Current Gatekeeper. On Call is resolved globally when the task is generated.</p>
-    <label class="checkbox-label"><input type="checkbox" name="is_active" value="1" ${checked(item.is_active ?? 1)}> Schedule active</label>
-    <div class="action-bar"><button type="submit">Save Schedule</button><a class="button secondary" href="/actions/schedules">Cancel</a></div>
+    <p class="muted">Choose an employee for Named Employee. Choose a team for Team Queue or Current Gatekeeper. On Call is resolved globally when the task is generated. Assignment identifies primary responsibility; every SupportApp user can still step in and complete the action.</p>
+    <label class="checkbox-label"><input type="checkbox" name="is_active" value="1" ${checked(item.is_active ?? 1)}> Action active</label>
+    <div class="action-bar"><button type="submit">Save Action</button><a class="button secondary" href="/actions/schedules">Cancel</a></div>
   </form></div>`;
 }
 
@@ -304,10 +330,40 @@ async function validateSchedule(db, item) {
   return '';
 }
 
+const SCHEDULE_SELECT = `SELECT s.*,ce.display_name creator_name,ce.team_id creator_team_id,
+  te.team_id target_employee_team_id,e.display_name target_employee_name,t.name target_team_name,
+  (SELECT COUNT(*) FROM scheduled_action_instances i WHERE i.schedule_id=s.id AND i.removed_at IS NULL) run_count,
+  (SELECT MAX(i.generated_at) FROM scheduled_action_instances i WHERE i.schedule_id=s.id AND i.removed_at IS NULL) last_run
+  FROM scheduled_action_schedules s
+  LEFT JOIN employees ce ON ce.id=s.created_by
+  LEFT JOIN employees te ON te.id=s.target_employee_id
+  LEFT JOIN employees e ON e.id=s.target_employee_id
+  LEFT JOIN teams t ON t.id=s.target_team_id`;
+
+function scheduleInManagedScope(user, schedule) {
+  if (!(user.isManager || user.isTeamLeader)) return false;
+  const managed = new Set((user.managedTeamIds || []).map(Number));
+  const relevantTeamId = Number(schedule.target_team_id || schedule.target_employee_team_id || schedule.creator_team_id);
+  return Boolean(relevantTeamId && managed.has(relevantTeamId));
+}
+
+function userOwnsSchedule(user, schedule) {
+  return Number(schedule.created_by) === Number(user.id);
+}
+
+function userCanEditSchedule(user, schedule) {
+  return Boolean(user.isSystemAdmin || userOwnsSchedule(user, schedule));
+}
+
+function userCanRemoveSchedule(user, schedule) {
+  return Boolean(user.isSystemAdmin || userOwnsSchedule(user, schedule) || scheduleInManagedScope(user, schedule));
+}
+
 async function scheduleFormPage(request, db, user, id = null) {
-  if (!user.isSystemAdmin) return page('Access Denied', '', '<div class="notice"><strong>System Administrator access is required to maintain schedules.</strong></div>', 403);
-  let item = id ? await row(db, 'SELECT * FROM scheduled_action_schedules WHERE id=?', id) : { recurrence_type: 'weekly', local_time: '09:00', priority: 'normal', assignment_type: 'team', due_after_minutes: 480, is_active: 1, start_date: londonParts().date };
-  if (!item) return page('Schedule Not Found', '', '<div class="notice"><strong>That schedule does not exist.</strong></div>', 404);
+  const local = londonParts();
+  let item = id ? await row(db, `${SCHEDULE_SELECT} WHERE s.id=? AND s.removed_at IS NULL`, id) : { recurrence_type: 'once', local_time: local.time, priority: 'normal', assignment_type: 'employee', target_employee_id: user.id, due_after_minutes: 480, is_active: 1, start_date: local.date };
+  if (!item) return page('Action Not Found', '', '<div class="notice"><strong>That action does not exist.</strong></div>', 404);
+  if (id && !userCanEditSchedule(user, item)) return page('Access Denied', '', '<div class="notice"><strong>Only the action owner can edit this action.</strong></div>', 403);
   const options = await scheduleOptions(db);
   let message = '';
   if (request.method.toUpperCase() === 'POST') {
@@ -320,23 +376,59 @@ async function scheduleFormPage(request, db, user, id = null) {
         await db.prepare(`UPDATE scheduled_action_schedules SET name=?,instructions=?,recurrence_type=?,local_time=?,day_of_week=?,day_of_month=?,start_date=?,end_date=?,due_after_minutes=?,priority=?,assignment_type=?,target_employee_id=?,target_team_id=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
           .bind(item.name,item.instructions||null,item.recurrence_type,item.local_time,item.day_of_week,item.day_of_month,item.start_date,item.end_date,item.due_after_minutes,item.priority,item.assignment_type,employeeId,teamId,item.is_active,id).run();
       } else {
-        await db.prepare(`INSERT INTO scheduled_action_schedules(name,instructions,recurrence_type,local_time,day_of_week,day_of_month,start_date,end_date,due_after_minutes,priority,assignment_type,target_employee_id,target_team_id,is_active,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        const created = await db.prepare(`INSERT INTO scheduled_action_schedules(name,instructions,recurrence_type,local_time,day_of_week,day_of_month,start_date,end_date,due_after_minutes,priority,assignment_type,target_employee_id,target_team_id,is_active,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .bind(item.name,item.instructions||null,item.recurrence_type,item.local_time,item.day_of_week,item.day_of_month,item.start_date,item.end_date,item.due_after_minutes,item.priority,item.assignment_type,employeeId,teamId,item.is_active,user.id).run();
+        const scheduleId = Number(created.meta?.last_row_id);
+        if (scheduleId && item.is_active && item.recurrence_type === 'once') {
+          const schedule = { ...item, id: scheduleId, target_employee_id: employeeId, target_team_id: teamId };
+          const scheduledFor = scheduledKeyIfDue(schedule, new Date());
+          if (scheduledFor) {
+            const instanceId = await generateInstance(db, schedule, scheduledFor);
+            await db.prepare('UPDATE scheduled_action_schedules SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(scheduleId).run();
+            if (instanceId) return redirect(`/actions/${instanceId}`);
+          }
+        }
       }
       return redirect('/actions/schedules');
     }
   }
-  return page(id ? 'Edit Schedule' : 'New Schedule', 'Define when an internal action is generated and how it is assigned.', scheduleForm(item, options, message));
+  return page(id ? 'Edit Action' : 'Create Action', 'Create a one-time handover or repeating internal action and choose who should receive it.', scheduleForm(item, options, message));
 }
 
-async function schedulesPage(db, user) {
-  if (!user.isSystemAdmin) return page('Access Denied', '', '<div class="notice"><strong>System Administrator access is required to maintain schedules.</strong></div>', 403);
-  const schedules = await rows(db, `SELECT s.*,e.display_name target_employee_name,t.name target_team_name,
-    (SELECT COUNT(*) FROM scheduled_action_instances i WHERE i.schedule_id=s.id) run_count,
-    (SELECT MAX(i.generated_at) FROM scheduled_action_instances i WHERE i.schedule_id=s.id) last_run
-    FROM scheduled_action_schedules s LEFT JOIN employees e ON e.id=s.target_employee_id LEFT JOIN teams t ON t.id=s.target_team_id ORDER BY s.is_active DESC,s.name`);
-  const content = schedules.length ? `<div class="table-card"><table><thead><tr><th>Schedule</th><th>Recurrence</th><th>Assignment</th><th>Last Generated</th><th>Status</th><th></th></tr></thead><tbody>${schedules.map((schedule) => `<tr><td><strong>${h(schedule.name)}</strong><br><span class="muted">${h(schedule.priority)} priority · ${schedule.run_count} generated</span></td><td>${h(recurrenceLabel(schedule))}</td><td>${h(schedule.target_employee_name || schedule.target_team_name || (schedule.assignment_type === 'on_call' ? 'Current On Call' : 'Current Gatekeeper'))}</td><td>${h(formatDateTime(schedule.last_run))}</td><td>${schedule.is_active ? '<span class="status-badge status-active">Active</span>' : '<span class="status-badge status-inactive">Paused</span>'}</td><td><div class="schedule-actions"><a class="button secondary" href="/actions/schedules/${schedule.id}/edit">Edit</a><form method="post" action="/actions/schedules/${schedule.id}/run"><button type="submit" class="secondary">Run Now</button></form><form method="post" action="/actions/schedules/${schedule.id}/toggle"><button type="submit" class="secondary">${schedule.is_active ? 'Pause' : 'Enable'}</button></form></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="notice"><strong>No schedules have been configured.</strong><br>This framework is intentionally empty. Add recurring actions only after each process has been reviewed and approved.</div>';
-  return page('Action Schedules', 'Create and govern recurring internal work without relying on external email.', `<div class="action-bar"><a class="button" href="/actions/schedules/new">New Schedule</a><a class="button secondary" href="/actions/team">Generated Actions</a></div>${content}`);
+function scheduleIsExpired(schedule, today = londonParts().date) {
+  if (schedule.recurrence_type === 'once') return schedule.start_date < today || Number(schedule.run_count || 0) > 0;
+  return Boolean(schedule.end_date && schedule.end_date < today);
+}
+
+function scheduleFilters(request) {
+  const params = new URL(request.url).searchParams;
+  const state = ['current', 'expired', 'all'].includes(params.get('state')) ? params.get('state') : 'current';
+  return { state, q: String(params.get('q') || '').trim() };
+}
+
+function scheduleFilterForm(filters) {
+  const stateOptions = [['current','Current'],['expired','Expired'],['all','All']].map(([value, label]) => `<option value="${value}" ${selected(filters.state, value)}>${label}</option>`).join('');
+  return `<form class="action-bar action-filters" method="get" action="/actions/schedules"><label>State<select name="state">${stateOptions}</select></label><label>Search<input name="q" value="${h(filters.q)}" placeholder="Title, owner or assignee"></label><button type="submit">Apply Filters</button><a class="button secondary" href="/actions/schedules">Reset</a></form>`;
+}
+
+async function schedulesPage(request, db, user) {
+  const filters = scheduleFilters(request);
+  const allSchedules = await rows(db, `${SCHEDULE_SELECT} WHERE s.removed_at IS NULL ORDER BY s.is_active DESC,s.name`);
+  let schedules = user.isSystemAdmin ? allSchedules : allSchedules.filter((schedule) => userOwnsSchedule(user, schedule) || scheduleInManagedScope(user, schedule));
+  if (filters.state === 'current') schedules = schedules.filter((schedule) => !scheduleIsExpired(schedule));
+  if (filters.state === 'expired') schedules = schedules.filter((schedule) => scheduleIsExpired(schedule));
+  if (filters.q) {
+    const needle = filters.q.toLowerCase();
+    schedules = schedules.filter((schedule) => [schedule.name,schedule.instructions,schedule.creator_name,schedule.target_employee_name,schedule.target_team_name].some((value) => String(value || '').toLowerCase().includes(needle)));
+  }
+  const content = schedules.length ? `<div class="table-card"><table><thead><tr><th>Action</th><th>Owner</th><th>Timing</th><th>Assignment</th><th>Last Generated</th><th>Status</th><th></th></tr></thead><tbody>${schedules.map((schedule) => {
+    const canEdit = userCanEditSchedule(user, schedule);
+    const canRemove = userCanRemoveSchedule(user, schedule);
+    const controls = `${canEdit ? `<a class="button secondary" href="/actions/schedules/${schedule.id}/edit">Edit</a><form method="post" action="/actions/schedules/${schedule.id}/run"><button type="submit" class="secondary">Run Now</button></form><form method="post" action="/actions/schedules/${schedule.id}/toggle"><button type="submit" class="secondary">${schedule.is_active ? 'Pause' : 'Enable'}</button></form>` : ''}${canRemove ? `<form method="post" action="/actions/schedules/${schedule.id}/remove"><button type="submit" class="secondary">Remove</button></form>` : ''}`;
+    const state = scheduleIsExpired(schedule) ? '<span class="status-badge status-inactive">Expired</span>' : schedule.is_active ? '<span class="status-badge status-active">Active</span>' : '<span class="status-badge status-inactive">Paused</span>';
+    return `<tr><td><strong>${h(schedule.name)}</strong><br><span class="muted">${h(schedule.priority)} priority · ${schedule.run_count} generated</span></td><td>${h(schedule.creator_name || 'Unknown')}</td><td>${h(recurrenceLabel(schedule))}</td><td>${h(schedule.target_employee_name || schedule.target_team_name || (schedule.assignment_type === 'on_call' ? 'Current On Call' : 'Current Gatekeeper'))}</td><td>${h(formatDateTime(schedule.last_run))}</td><td>${state}</td><td><div class="schedule-actions">${controls}</div></td></tr>`;
+  }).join('')}</tbody></table></div>` : '<div class="notice"><strong>No actions have been created in your scope.</strong><br>Create a one-time action for a handover or a repeating action for recurring work.</div>';
+  return page('Created Actions', 'Review actions you own and, for Managers and Team Leaders, actions within your managed teams. Expired definitions are hidden by default.', `<div class="action-bar"><a class="button" href="/actions/new">Create Action</a><a class="button secondary" href="/actions">My Actions</a><a class="button secondary" href="/actions/all">All Actions</a>${user.isSystemAdmin || user.isManager || user.isTeamLeader ? '<a class="button secondary" href="/actions/team">Team Actions</a>' : ''}</div>${scheduleFilterForm(filters)}${content}`);
 }
 
 function userCanManageInstance(user, instance) {
@@ -346,10 +438,12 @@ function userCanManageInstance(user, instance) {
   return managed.has(Number(instance.assigned_team_id)) || managed.has(Number(instance.assigned_employee_team_id));
 }
 
-function userCanViewInstance(user, instance) {
-  return userCanManageInstance(user, instance)
-    || Number(instance.assigned_employee_id) === Number(user.id)
-    || (!instance.assigned_employee_id && Number(instance.assigned_team_id) === Number(user.team_id));
+function userCanRemoveInstance(user, instance) {
+  if (user.isSystemAdmin || Number(instance.created_by) === Number(user.id)) return true;
+  if (!(user.isManager || user.isTeamLeader)) return false;
+  const managed = new Set((user.managedTeamIds || []).map(Number));
+  const relevantTeamId = Number(instance.assigned_team_id || instance.assigned_employee_team_id || instance.creator_team_id);
+  return Boolean(relevantTeamId && managed.has(relevantTeamId));
 }
 
 async function addHistory(db, instanceId, actorId, eventType, fromStatus, toStatus, notes = null) {
@@ -360,10 +454,8 @@ async function addHistory(db, instanceId, actorId, eventType, fromStatus, toStat
 async function instancePage(request, db, user, id) {
   let instance = await row(db, `${INSTANCE_SELECT} WHERE i.id=?`, id);
   if (!instance) return page('Action Not Found', '', '<div class="notice"><strong>That scheduled action does not exist.</strong></div>', 404);
-  if (!userCanViewInstance(user, instance)) return page('Access Denied', '', '<div class="notice"><strong>This action is outside your assigned or managed scope.</strong></div>', 403);
   const canManage = userCanManageInstance(user, instance);
-  const own = Number(instance.assigned_employee_id) === Number(user.id);
-  const teamQueue = !instance.assigned_employee_id && Number(instance.assigned_team_id) === Number(user.team_id);
+  const teamQueue = !instance.assigned_employee_id;
   if (request.method.toUpperCase() === 'POST') {
     const form = await request.formData();
     const action = String(form.get('action') || '');
@@ -372,30 +464,45 @@ async function instancePage(request, db, user, id) {
     if (action === 'claim' && teamQueue && from === 'open') {
       const result = await db.prepare(`UPDATE scheduled_action_instances SET assigned_employee_id=?,claimed_by=?,claimed_at=CURRENT_TIMESTAMP,status='in_progress',updated_at=CURRENT_TIMESTAMP WHERE id=? AND assigned_employee_id IS NULL AND status='open'`).bind(user.id,user.id,id).run();
       if (Number(result.meta?.changes || 0) === 1) await addHistory(db,id,user.id,'claimed',from,'in_progress',notes);
-    } else if (action === 'start' && (own || canManage) && from === 'open') {
-      await db.prepare(`UPDATE scheduled_action_instances SET status='in_progress',updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(id).run();
-      await addHistory(db,id,user.id,'started',from,'in_progress',notes);
-    } else if (action === 'complete' && (own || teamQueue || canManage) && ['open','in_progress'].includes(from)) {
-      await db.prepare(`UPDATE scheduled_action_instances SET assigned_employee_id=COALESCE(assigned_employee_id,?),status='completed',completed_by=?,completed_at=CURRENT_TIMESTAMP,completion_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(user.id,user.id,notes,id).run();
-      await addHistory(db,id,user.id,'completed',from,'completed',notes);
+    } else if (action === 'start' && from === 'open') {
+      const result = await db.prepare(`UPDATE scheduled_action_instances SET status='in_progress',updated_at=CURRENT_TIMESTAMP WHERE id=? AND removed_at IS NULL AND status='open'`).bind(id).run();
+      if (Number(result.meta?.changes || 0) === 1) await addHistory(db,id,user.id,'started',from,'in_progress',notes);
+    } else if (action === 'complete' && ['open','in_progress'].includes(from)) {
+      const result = await db.prepare(`UPDATE scheduled_action_instances SET assigned_employee_id=COALESCE(assigned_employee_id,?),status='completed',completed_by=?,completed_at=CURRENT_TIMESTAMP,completion_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND removed_at IS NULL AND status IN ('open','in_progress')`).bind(user.id,user.id,notes,id).run();
+      if (Number(result.meta?.changes || 0) === 1) await addHistory(db,id,user.id,'completed',from,'completed',notes);
     } else if (action === 'skip' && canManage && ['open','in_progress'].includes(from)) {
       if (!notes) return page('Reason Required', '', '<div class="notice"><strong>Provide a reason when skipping a scheduled action.</strong></div>', 400);
-      await db.prepare(`UPDATE scheduled_action_instances SET status='skipped',skipped_by=?,skipped_at=CURRENT_TIMESTAMP,skip_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(user.id,notes,id).run();
-      await addHistory(db,id,user.id,'skipped',from,'skipped',notes);
+      const result = await db.prepare(`UPDATE scheduled_action_instances SET status='skipped',skipped_by=?,skipped_at=CURRENT_TIMESTAMP,skip_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND removed_at IS NULL AND status IN ('open','in_progress')`).bind(user.id,notes,id).run();
+      if (Number(result.meta?.changes || 0) === 1) await addHistory(db,id,user.id,'skipped',from,'skipped',notes);
+    } else if (action === 'remove' && userCanRemoveInstance(user, instance) && ['open','in_progress'].includes(from)) {
+      const result = await db.prepare(`UPDATE scheduled_action_instances SET removed_at=CURRENT_TIMESTAMP,removed_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND removed_at IS NULL AND status IN ('open','in_progress')`).bind(user.id,id).run();
+      if (Number(result.meta?.changes || 0) === 1) await addHistory(db,id,user.id,'removed',from,null,notes || 'Action removed.');
+      return redirect('/actions');
     }
     return redirect(`/actions/${id}`);
   }
   const history = await rows(db, `SELECT h.*,e.display_name actor_name FROM scheduled_action_history h LEFT JOIN employees e ON e.id=h.actor_id WHERE h.instance_id=? ORDER BY h.id DESC`, id);
-  const actions = ['open','in_progress'].includes(instance.status) ? `<div class="form-card action-update"><form method="post"><label>Completion / Action Notes<textarea name="notes" rows="4" placeholder="Record the outcome, evidence or reason for the change."></textarea></label><div class="action-bar">${teamQueue && instance.status === 'open' ? '<button name="action" value="claim">Claim Action</button>' : ''}${(own || canManage) && instance.status === 'open' ? '<button name="action" value="start" class="secondary">Start</button>' : ''}${own || teamQueue || canManage ? '<button name="action" value="complete">Complete</button>' : ''}${canManage ? '<button name="action" value="skip" class="secondary">Skip</button>' : ''}</div></form></div>` : '';
+  const canRemove = userCanRemoveInstance(user, instance);
+  const actions = !instance.removed_at && ['open','in_progress'].includes(instance.status) ? `<div class="form-card action-update"><form method="post"><label>Completion / Action Notes<textarea name="notes" rows="4" placeholder="Record the outcome, evidence or reason for the change."></textarea></label><div class="action-bar">${teamQueue && instance.status === 'open' ? '<button name="action" value="claim">Claim Action</button>' : ''}${instance.status === 'open' ? '<button name="action" value="start" class="secondary">Start</button>' : ''}<button name="action" value="complete">Complete & Close</button>${canManage ? '<button name="action" value="skip" class="secondary">Skip</button>' : ''}${canRemove ? '<button name="action" value="remove" class="secondary">Remove Action</button>' : ''}</div></form></div>` : '';
   const historyHtml = history.length ? `<div class="action-history">${history.map((event) => `<div><strong>${h(String(event.event_type).replace(/^./, (x) => x.toUpperCase()))}</strong><span>${h(event.actor_name || 'Scheduler')} · ${h(formatDateTime(event.created_at))}</span>${event.notes ? `<p>${h(event.notes)}</p>` : ''}</div>`).join('')}</div>` : '<div class="empty">No history recorded.</div>';
-  const details = `<div class="scheduled-action-detail"><section class="dashboard-panel"><div class="action-detail-heading">${priorityBadge(instance.priority)}${statusBadge(instance)}</div><h2>${h(instance.title_snapshot)}</h2><p class="action-instructions">${h(instance.instructions_snapshot || 'No additional instructions were supplied.')}</p><dl><dt>Assigned To</dt><dd>${h(assignmentLabel(instance))}</dd><dt>Scheduled</dt><dd>${h(formatDateTime(instance.scheduled_for))}</dd><dt>Due</dt><dd>${h(formatDateTime(instance.due_at))}</dd><dt>Source Schedule</dt><dd>${h(instance.schedule_name)}</dd></dl></section><section class="dashboard-panel"><h2>History</h2>${historyHtml}</section></div>`;
-  return page(instance.title_snapshot, 'Scheduled internal action and completion record.', `${details}<div class="section-gap">${actions}</div>`);
+  const details = `<div class="scheduled-action-detail"><section class="dashboard-panel"><div class="action-detail-heading">${priorityBadge(instance.priority)}${statusBadge(instance)}</div><h2>${h(instance.title_snapshot)}</h2><p class="action-instructions">${h(instance.instructions_snapshot || 'No additional instructions were supplied.')}</p><dl><dt>Assigned To</dt><dd>${h(assignmentLabel(instance))}</dd><dt>Owner</dt><dd>${h(instance.creator_name || 'Unknown')}</dd><dt>Created For</dt><dd>${h(formatDateTime(instance.scheduled_for))}</dd><dt>Due</dt><dd>${h(formatDateTime(instance.due_at))}</dd><dt>Source Action</dt><dd>${h(instance.schedule_name)}</dd></dl></section><section class="dashboard-panel"><h2>History</h2>${historyHtml}</section></div>`;
+  return page(instance.title_snapshot, 'Internal action and retained completion record.', `${details}<div class="section-gap">${actions}</div>`);
 }
 
 async function scheduleAction(request, db, user, id, operation, now = new Date()) {
-  if (!user.isSystemAdmin) return page('Access Denied', '', '<div class="notice"><strong>System Administrator access is required.</strong></div>', 403);
-  const schedule = await row(db, 'SELECT * FROM scheduled_action_schedules WHERE id=?', id);
+  const schedule = await row(db, `${SCHEDULE_SELECT} WHERE s.id=? AND s.removed_at IS NULL`, id);
   if (!schedule) return redirect('/actions/schedules');
+  if (operation === 'remove') {
+    if (!userCanRemoveSchedule(user, schedule)) return page('Access Denied', '', '<div class="notice"><strong>Only the action owner or an authorised Manager/Team Leader can remove this action.</strong></div>', 403);
+    const openInstances = await rows(db, `SELECT id,status FROM scheduled_action_instances WHERE schedule_id=? AND removed_at IS NULL AND status IN ('open','in_progress')`, id);
+    for (const instance of openInstances) {
+      const result = await db.prepare(`UPDATE scheduled_action_instances SET removed_at=CURRENT_TIMESTAMP,removed_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND removed_at IS NULL AND status IN ('open','in_progress')`).bind(user.id,instance.id).run();
+      if (Number(result.meta?.changes || 0) === 1) await addHistory(db,instance.id,user.id,'removed',instance.status,null,'Source action removed.');
+    }
+    await db.prepare(`UPDATE scheduled_action_schedules SET is_active=0,removed_at=CURRENT_TIMESTAMP,removed_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(user.id,id).run();
+    return redirect('/actions/schedules');
+  }
+  if (!userCanEditSchedule(user, schedule)) return page('Access Denied', '', '<div class="notice"><strong>Only the action owner can change or run this action.</strong></div>', 403);
   if (operation === 'toggle') await db.prepare('UPDATE scheduled_action_schedules SET is_active=CASE is_active WHEN 1 THEN 0 ELSE 1 END,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(id).run();
   if (operation === 'run') {
     const local = londonParts(now);
@@ -405,24 +512,26 @@ async function scheduleAction(request, db, user, id, operation, now = new Date()
 }
 
 export async function scheduledActionAttention(db, user, now = new Date()) {
-  const result = await row(db, `SELECT COUNT(*) c,SUM(CASE WHEN due_at<? THEN 1 ELSE 0 END) overdue FROM scheduled_action_instances WHERE status IN ('open','in_progress') AND (assigned_employee_id=? OR (assigned_employee_id IS NULL AND assigned_team_id=?))`, now.toISOString(), user.id, user.team_id);
+  const result = await row(db, `SELECT COUNT(*) c,SUM(CASE WHEN i.due_at<? THEN 1 ELSE 0 END) overdue FROM scheduled_action_instances i LEFT JOIN employees e ON e.id=i.assigned_employee_id WHERE i.removed_at IS NULL AND i.status IN ('open','in_progress') AND (i.assigned_team_id=? OR e.team_id=?)`, now.toISOString(), user.team_id, user.team_id);
   return { open: Number(result?.c || 0), overdue: Number(result?.overdue || 0) };
 }
 
 export async function teamScheduledActionAttention(db, teamIds, now = new Date()) {
   if (!teamIds.length) return { open: 0, overdue: 0 };
   const marks = teamIds.map(() => '?').join(',');
-  const result = await row(db, `SELECT COUNT(*) c,SUM(CASE WHEN i.due_at<? THEN 1 ELSE 0 END) overdue FROM scheduled_action_instances i LEFT JOIN employees e ON e.id=i.assigned_employee_id WHERE i.status IN ('open','in_progress') AND (i.assigned_team_id IN (${marks}) OR e.team_id IN (${marks}))`, now.toISOString(), ...teamIds, ...teamIds);
+  const result = await row(db, `SELECT COUNT(*) c,SUM(CASE WHEN i.due_at<? THEN 1 ELSE 0 END) overdue FROM scheduled_action_instances i LEFT JOIN employees e ON e.id=i.assigned_employee_id WHERE i.removed_at IS NULL AND i.status IN ('open','in_progress') AND (i.assigned_team_id IN (${marks}) OR e.team_id IN (${marks}))`, now.toISOString(), ...teamIds, ...teamIds);
   return { open: Number(result?.c || 0), overdue: Number(result?.overdue || 0) };
 }
 
 export async function handleScheduledActionRoute(request, db, user, path) {
   if (path === '/actions' && request.method.toUpperCase() === 'GET') return myActionsPage(request, db, user);
+  if (path === '/actions/all' && request.method.toUpperCase() === 'GET') return allActionsPage(request, db, user);
   if (path === '/actions/team' && request.method.toUpperCase() === 'GET') return teamActionsPage(request, db, user);
-  if (path === '/actions/schedules' && request.method.toUpperCase() === 'GET') return schedulesPage(db, user);
+  if (path === '/actions/schedules' && request.method.toUpperCase() === 'GET') return schedulesPage(request, db, user);
+  if (path === '/actions/new' && ['GET','POST'].includes(request.method.toUpperCase())) return scheduleFormPage(request, db, user);
   if (path === '/actions/schedules/new' && ['GET','POST'].includes(request.method.toUpperCase())) return scheduleFormPage(request, db, user);
   if (/^\/actions\/schedules\/\d+\/edit$/.test(path) && ['GET','POST'].includes(request.method.toUpperCase())) return scheduleFormPage(request, db, user, Number(path.split('/')[3]));
-  if (/^\/actions\/schedules\/\d+\/(run|toggle)$/.test(path) && request.method.toUpperCase() === 'POST') { const parts = path.split('/'); return scheduleAction(request, db, user, Number(parts[3]), parts[4]); }
+  if (/^\/actions\/schedules\/\d+\/(run|toggle|remove)$/.test(path) && request.method.toUpperCase() === 'POST') { const parts = path.split('/'); return scheduleAction(request, db, user, Number(parts[3]), parts[4]); }
   if (/^\/actions\/\d+$/.test(path) && ['GET','POST'].includes(request.method.toUpperCase())) return instancePage(request, db, user, Number(path.split('/')[2]));
   return null;
 }
