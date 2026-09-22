@@ -72,8 +72,30 @@ async function renderCertificationPage(request, env, title, description, content
   return new Response(text, { status, headers });
 }
 
+function actionNavHref(path) {
+  if (path === '/actions/all') return '/actions/all';
+  if (path === '/actions/new') return '/actions/new';
+  if (path.startsWith('/actions/schedules')) return '/actions/schedules';
+  if (path.startsWith('/actions/team')) return '/actions/team';
+  return '/actions';
+}
+
+export function activateActionNav(text, path) {
+  const href = actionNavHref(path);
+  text = text.replace(`class="" href="${href}"`, `class="active" href="${href}"`);
+  const group = text.match(/data-nav-group="([^"]+)" aria-expanded="(?:true|false)"><span>Actions</);
+  if (!group) return text;
+  const groupId = group[1];
+  return text
+    .replace(`data-nav-group="${groupId}" aria-expanded="false"`, `data-nav-group="${groupId}" aria-expanded="true"`)
+    .replace(`data-nav-children="${groupId}" hidden`, `data-nav-children="${groupId}"`);
+}
+
 async function renderScheduledActionPage(request, env, path, result) {
-  const shellUrl = new URL(path, request.url);
+  // Use a known authenticated page as the shell. Passing an /actions path to
+  // worker-v6 falls through to the minimal error shell because those routes are
+  // owned by this worker layer.
+  const shellUrl = new URL('/notifications', request.url);
   const shellRequest = new Request(shellUrl.toString(), { method: 'GET', headers: request.headers });
   const shellResponse = await workerV6.fetch(shellRequest, env);
   const type = shellResponse.headers.get('content-type') || '';
@@ -84,6 +106,7 @@ async function renderScheduledActionPage(request, env, path, result) {
   const main = `<main class="page"><div class="page-header"><div><div class="page-title">${title}</div>${description}</div></div>${result.content || ''}</main>`;
   text = text.replace(/<title>[\s\S]*?<\/title>/, `<title>${title} · Support Portal</title>`);
   text = text.replace(/<main class="page">[\s\S]*?<\/main>/, main);
+  text = activateActionNav(text, path);
   const headers = new Headers(shellResponse.headers);
   headers.set('content-type', 'text/html; charset=UTF-8');
   return new Response(text, { status: result.status || 200, headers });
