@@ -1,5 +1,6 @@
 import baseWorker from './worker-v3.js';
 import { ensureSchema } from './schema.js';
+import { canManageTeam, canManageTeamOperations, hasScopedTeamManagementRole, isElevatedRoleName } from './permissions.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -29,7 +30,7 @@ function nav(auth, active = '') {
     ['Dashboard', '/', true],
     ['Rota', '/rota', true],
     ['Teams', '/teams', auth.isSystemAdmin],
-    ['Employees', '/employees', auth.isSystemAdmin || auth.isManager],
+    ['Employees', '/employees', canManageTeamOperations(auth)],
     ['Shift Patterns', '/shift-patterns', auth.isSystemAdmin],
     ['Administration', '/administration', auth.isSystemAdmin],
   ];
@@ -65,7 +66,7 @@ async function authContext(request, db, env) {
 
   if (!email) {
     if (required) return { authenticated: false, reason: 'Cloudflare Access authentication is required.' };
-    return { authenticated: true, bootstrap: true, displayName: 'UAT Bootstrap', primaryRole: 'SystemAdmin', roles: ['SystemAdmin'], isSystemAdmin: true, isManager: false, managedTeamIds: [] };
+    return { authenticated: true, bootstrap: true, displayName: 'UAT Bootstrap', primaryRole: 'SystemAdmin', roles: ['SystemAdmin'], isSystemAdmin: true, isManager: false, isTeamLeader: false, managedTeamIds: [] };
   }
 
   const employee = await row(db, `SELECT id,display_name,email,external_identity,is_active FROM employees
@@ -77,6 +78,7 @@ async function authContext(request, db, env) {
   const teamRows = await rows(db, 'SELECT team_id FROM team_managers WHERE employee_id=? ORDER BY team_id', employee.id);
   const isSystemAdmin = rolesList.includes('SystemAdmin');
   const isManager = rolesList.includes('Manager');
+  const isTeamLeader = rolesList.includes('TeamLeader');
   return {
     authenticated: true,
     provisioned: true,
@@ -84,15 +86,12 @@ async function authContext(request, db, env) {
     email,
     displayName: employee.display_name,
     roles: rolesList,
-    primaryRole: isSystemAdmin ? 'SystemAdmin' : isManager ? 'Manager' : 'Engineer',
+    primaryRole: isSystemAdmin ? 'SystemAdmin' : isManager ? 'Manager' : isTeamLeader ? 'TeamLeader' : 'Employee',
     isSystemAdmin,
     isManager,
+    isTeamLeader,
     managedTeamIds: teamRows.map(t => Number(t.team_id)),
   };
-}
-
-function canManageTeam(auth, teamId) {
-  return auth.isSystemAdmin || (auth.isManager && auth.managedTeamIds.includes(Number(teamId)));
 }
 
 async function decorateResponse(response, auth, active = '') {
@@ -106,18 +105,18 @@ async function decorateResponse(response, auth, active = '') {
 }
 
 async function dashboardPage(db, auth) {
-  const teamClause = auth.isManager && !auth.isSystemAdmin && auth.managedTeamIds.length
+  const teamClause = hasScopedTeamManagementRole(auth) && !auth.isSystemAdmin && auth.managedTeamIds.length
     ? `WHERE id IN (${auth.managedTeamIds.map(() => '?').join(',')})`
     : '';
   const teamParams = teamClause ? auth.managedTeamIds : [];
   const teams = auth.isSystemAdmin ? (await row(db, 'SELECT COUNT(*) AS c FROM teams WHERE is_active=1'))?.c ?? 0
-    : auth.isManager ? (await row(db, `SELECT COUNT(*) AS c FROM teams ${teamClause}`, ...teamParams))?.c ?? 0 : 0;
+    : hasScopedTeamManagementRole(auth) ? (await row(db, `SELECT COUNT(*) AS c FROM teams ${teamClause}`, ...teamParams))?.c ?? 0 : 0;
   const employees = auth.isSystemAdmin ? (await row(db, 'SELECT COUNT(*) AS c FROM employees WHERE is_active=1'))?.c ?? 0
-    : auth.isManager && auth.managedTeamIds.length ? (await row(db, `SELECT COUNT(*) AS c FROM employees WHERE is_active=1 AND team_id IN (${auth.managedTeamIds.map(() => '?').join(',')})`, ...auth.managedTeamIds))?.c ?? 0 : 0;
+    : hasScopedTeamManagementRole(auth) && auth.managedTeamIds.length ? (await row(db, `SELECT COUNT(*) AS c FROM employees WHERE is_active=1 AND team_id IN (${auth.managedTeamIds.map(() => '?').join(',')})`, ...auth.managedTeamIds))?.c ?? 0 : 0;
   const patterns = auth.isSystemAdmin ? (await row(db, 'SELECT COUNT(*) AS c FROM rota_patterns WHERE is_active=1'))?.c ?? 0 : null;
 
   const cards = [];
-  if (auth.isSystemAdmin || auth.isManager) cards.push(`<article class="card"><h2>Employees</h2><p class="muted">${auth.isManager && !auth.isSystemAdmin ? 'Employees in teams you manage.' : 'People currently represented in SupportApp.'}</p><div class="metric">${employees}</div><a class="button" href="/employees">Manage employees</a></article>`);
+  if (canManageTeamOperations(auth)) cards.push(`<article class="card"><h2>Employees</h2><p class="muted">${hasScopedTeamManagementRole(auth) && !auth.isSystemAdmin ? 'Employees in teams you manage.' : 'People currently represented in SupportApp.'}</p><div class="metric">${employees}</div><a class="button" href="/employees">Manage employees</a></article>`);
   if (auth.isSystemAdmin) {
     cards.push(`<article class="card"><h2>Teams</h2><p class="muted">Departments, managers and operational teams.</p><div class="metric">${teams}</div><a class="button" href="/teams">Manage teams</a></article>`);
     cards.push(`<article class="card"><h2>Rota Patterns</h2><p class="muted">Reusable multi-week rota cycles built from week patterns.</p><div class="metric">${patterns}</div><a class="button" href="/shift-patterns">Manage patterns</a></article>`);
@@ -131,17 +130,17 @@ async function dashboardPage(db, auth) {
 async function managerCandidates(db) {
   return rows(db, `SELECT DISTINCT e.id,e.display_name AS name FROM employees e
     JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id
-    WHERE e.is_active=1 AND r.name='Manager' ORDER BY e.display_name`);
+    WHERE e.is_active=1 AND r.name IN ('Manager','TeamLeader') ORDER BY e.display_name`);
 }
 function managerCheckboxes(candidates, selectedIds = []) {
-  if (!candidates.length) return '<div class="muted">No employees currently have the Manager role.</div>';
+  if (!candidates.length) return '<div class="muted">No employees currently have the Manager or Team Leader role.</div>';
   return `<div class="manager-grid">${candidates.map(m => `<label class="checkbox-label"><input type="checkbox" name="manager_ids" value="${m.id}" ${selectedIds.includes(Number(m.id)) ? 'checked' : ''}> ${h(m.name)}</label>`).join('')}</div>`;
 }
 async function saveTeamManagers(db, teamId, managerIds) {
   await db.prepare('DELETE FROM team_managers WHERE team_id=?').bind(teamId).run();
   const unique = [...new Set(managerIds.map(Number).filter(Boolean))];
   for (const employeeId of unique) {
-    const eligible = await row(db, `SELECT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id WHERE e.id=? AND e.is_active=1 AND r.name='Manager'`, employeeId);
+    const eligible = await row(db, `SELECT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id WHERE e.id=? AND e.is_active=1 AND r.name IN ('Manager','TeamLeader')`, employeeId);
     if (eligible) await db.prepare('INSERT OR IGNORE INTO team_managers (team_id,employee_id) VALUES (?,?)').bind(teamId, employeeId).run();
   }
 }
@@ -155,9 +154,9 @@ async function teamsPage(db, auth) {
   const departments = await rows(db, 'SELECT id,name FROM departments WHERE is_active=1 ORDER BY name');
   const patterns = await rows(db, 'SELECT id,name FROM rota_patterns WHERE is_active=1 ORDER BY name');
   const managers = await managerCandidates(db);
-  const table = teams.length ? `<table><thead><tr><th>Team</th><th>Department</th><th>Managers</th><th>Members</th><th>Default Rota</th><th>Status</th><th></th></tr></thead><tbody>${teams.map(t => `<tr><td><a href="/teams/${t.id}/edit"><strong>${h(t.name)}</strong></a></td><td>${h(t.department_name)}</td><td>${h(t.managers)}</td><td>${t.member_count ?? 0}</td><td>${h(t.pattern_name || 'No Scheduled Hours')}</td><td>${statusBadge(t.is_active)}</td><td class="text-right"><a class="button secondary" href="/teams/${t.id}/edit">Edit</a><form class="inline-form" method="post" action="/teams/${t.id}/toggle"><button class="secondary" type="submit">${t.is_active ? 'Deactivate' : 'Reactivate'}</button></form></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No teams have been created yet.</div>';
+  const table = teams.length ? `<table><thead><tr><th>Team</th><th>Department</th><th>Managers / Team Leaders</th><th>Members</th><th>Default Rota</th><th>Status</th><th></th></tr></thead><tbody>${teams.map(t => `<tr><td><a href="/teams/${t.id}/edit"><strong>${h(t.name)}</strong></a></td><td>${h(t.department_name)}</td><td>${h(t.managers)}</td><td>${t.member_count ?? 0}</td><td>${h(t.pattern_name || 'No Scheduled Hours')}</td><td>${statusBadge(t.is_active)}</td><td class="text-right"><a class="button secondary" href="/teams/${t.id}/edit">Edit</a><form class="inline-form" method="post" action="/teams/${t.id}/toggle"><button class="secondary" type="submit">${t.is_active ? 'Deactivate' : 'Reactivate'}</button></form></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No teams have been created yet.</div>';
   const content = `${pageHeader('Teams', 'Departments, operational teams, rota defaults and manager scope.')}
-    <div class="notice"><strong>Manager scope</strong><br>Managers and team leaders use the Manager role. Assigning them here determines which teams they may administer.</div>
+    <div class="notice"><strong>Management scope</strong><br>Assign Managers and Team Leaders here to determine which teams they may administer.</div>
     <div class="table-card">${table}</div>
     <div class="action-bar section-gap"><button type="button" data-modal-open="create-team">Add Team</button></div>
     <dialog class="app-modal" id="create-team"><div class="modal-head"><h2>Add Team</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/teams">
@@ -166,7 +165,7 @@ async function teamsPage(db, auth) {
       <label>Description<textarea name="description" rows="3" maxlength="255"></textarea></label>
       <label>Default Rota Pattern<select name="default_rota_pattern_id">${options(patterns, null, true, 'No Scheduled Hours')}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date"></label>
-      <label>Managers</label>${managerCheckboxes(managers)}
+      <label>Managers / Team Leaders</label>${managerCheckboxes(managers)}
       <div class="action-bar"><button type="submit">Create Team</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>`;
   return htmlResponse('Teams', content, auth, 'Teams');
 }
@@ -200,7 +199,7 @@ async function editTeamPage(db, id, auth) {
       <label>Default Rota Pattern<select name="default_rota_pattern_id" required>${options(patterns, team.default_rota_pattern_id)}</select></label>
       <label>Pattern Start Date<input name="default_pattern_start_date" type="date" value="${h(team.default_pattern_start_date || '')}"></label>
       <div style="margin:18px 0;padding:14px;border:1px solid #b9dce5;border-radius:6px;background:#f7fcfd"><strong style="display:block;margin-bottom:8px">Gatekeeping</strong><label style="display:flex;align-items:center;gap:10px;margin:0"><input type="checkbox" name="gatekeeper_enabled" value="1" ${team.gatekeeper_enabled ? 'checked' : ''} style="width:auto"> Include this team in the Gatekeeper rotation</label></div>
-      <label>Managers</label>${managerCheckboxes(managers, selected)}
+      <label>Managers / Team Leaders</label>${managerCheckboxes(managers, selected)}
       <label class="checkbox-label"><input type="checkbox" name="is_active" ${team.is_active ? 'checked' : ''}> Active</label>
       <div class="action-bar"><button type="submit">Save Changes</button><a class="button secondary" href="/teams">Cancel</a></div>
     </form></div>`;
@@ -232,9 +231,9 @@ async function employeesPage(db, auth) {
   const patterns = await rows(db, "SELECT id,name FROM rota_patterns WHERE is_active=1 AND name<>'No Scheduled Hours' ORDER BY name");
   const roles = await rows(db, 'SELECT id,name FROM roles ORDER BY name');
   const table = employees.length ? `<table><thead><tr><th>Employee</th><th>Username</th><th>Role</th><th>Job Title</th><th>Team</th><th>Rota</th><th>Status</th><th></th></tr></thead><tbody>${employees.map(e => `<tr><td><a href="/employees/${e.id}/edit"><strong>${h(e.display_name)}</strong></a>${!e.email ? '<br><span class="warning-text">Email required for Access</span>' : ''}</td><td>${h(e.username || '—')}</td><td>${h(e.roles)}</td><td>${h(e.job_title || '—')}</td><td>${h(e.team_name)}</td><td>${h(e.effective_pattern)}</td><td>${statusBadge(e.is_active)}</td><td class="text-right"><a class="button secondary" href="/employees/${e.id}/edit">Edit</a><form class="inline-form" method="post" action="/employees/${e.id}/toggle"><button class="secondary" type="submit">${e.is_active ? 'Deactivate' : 'Reactivate'}</button></form></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No employees are available in your management scope.</div>';
-  const roleOptions = auth.isSystemAdmin ? options(roles) : options(roles.filter(r => r.name === 'Engineer'));
+  const roleOptions = auth.isSystemAdmin ? options(roles) : options(roles.filter(r => r.name === 'Employee'));
   const create = teams.length ? `<div class="action-bar section-gap"><button type="button" data-modal-open="create-employee">Add Employee</button></div><dialog class="app-modal" id="create-employee"><div class="modal-head"><h2>Add Employee</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/employees"><label>Display Name<input name="display_name" required maxlength="100"></label><label>Username<input name="username" required maxlength="100"></label><label>Email<input name="email" type="email" required maxlength="200"></label><label>Role<select name="role_id" required>${roleOptions}</select></label><label>Team<select name="team_id" required>${options(teams)}</select></label><label>Job Title<input name="job_title" maxlength="100"></label><label>Phone<input name="phone" maxlength="50"></label><label>Rota Override<select name="override_rota_pattern_id">${options(patterns,null,true,'— Inherit team default —')}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date"></label><div class="action-bar"><button type="submit">Create Employee</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>` : '';
-  const scopeNotice = auth.isManager && !auth.isSystemAdmin ? '<div class="notice"><strong>Manager scope</strong><br>You can create and maintain employees only within teams assigned to you. Role changes to Manager or SystemAdmin require a SystemAdmin.</div>' : '';
+  const scopeNotice = hasScopedTeamManagementRole(auth) && !auth.isSystemAdmin ? '<div class="notice"><strong>Management scope</strong><br>You can create and maintain ordinary employees only within teams assigned to you. Team Leader, Manager and SystemAdmin role changes require a SystemAdmin.</div>' : '';
   return htmlResponse('Employees', `${pageHeader('Employees','People, portal identity, access role, team membership and rota assignment.')}${scopeNotice}<div class="table-card">${table}</div>${create}`, auth, 'Employees');
 }
 
@@ -242,10 +241,12 @@ async function editEmployeePage(db, id, auth) {
   const employee = await row(db, `SELECT e.*,er.role_id,r.name AS role_name FROM employees e LEFT JOIN employee_roles er ON er.employee_id=e.id LEFT JOIN roles r ON r.id=er.role_id WHERE e.id=?`, id);
   if (!employee) return friendlyError('Employee Not Found','The requested employee does not exist.',auth,'Employees',404);
   if (!canManageTeam(auth, employee.team_id)) return friendlyError('Access Denied','This employee is outside your management scope.',auth,'Employees',403);
+  const targetRoles = await rows(db, 'SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=?', id);
+  if (!auth.isSystemAdmin && targetRoles.some((role) => isElevatedRoleName(role.name))) return friendlyError('Access Denied','Team Leader, Manager and SystemAdmin accounts may only be edited by SystemAdmin.',auth,'Employees',403);
   const teams = await scopedTeams(db, auth, employee.team_id);
   const patterns = await rows(db, "SELECT id,name FROM rota_patterns WHERE is_active=1 AND name<>'No Scheduled Hours' ORDER BY name");
   let roles = await rows(db, 'SELECT id,name FROM roles ORDER BY name');
-  if (!auth.isSystemAdmin) roles = roles.filter(r => r.name === 'Engineer' || r.name === employee.role_name);
+  if (!auth.isSystemAdmin) roles = roles.filter(r => r.name === 'Employee' || r.name === employee.role_name);
   const leaveYears = await rows(db, 'SELECT id,name,start_date,end_date FROM leave_years WHERE is_active=1 ORDER BY start_date DESC');
   const annualType = await row(db, "SELECT id FROM leave_types WHERE code='ANNUAL'");
   const entitlements = annualType ? await rows(db, 'SELECT leave_year_id,entitlement_days,adjustment_days,notes FROM employee_leave_entitlements WHERE employee_id=? AND leave_type_id=?', id, annualType.id) : [];
@@ -262,7 +263,7 @@ async function saveEmployee(request, db, auth, id = null) {
   if (!canManageTeam(auth, teamId)) return friendlyError('Access Denied','The selected team is outside your management scope.',auth,'Employees',403);
   const roleId = Number(form.get('role_id'));
   const role = await row(db, 'SELECT name FROM roles WHERE id=?', roleId);
-  if (!auth.isSystemAdmin && role?.name !== 'Engineer') return friendlyError('Access Denied','Managers may only assign the Engineer role. Manager and SystemAdmin roles require a SystemAdmin.',auth,'Employees',403);
+  if (!auth.isSystemAdmin && role?.name !== 'Employee') return friendlyError('Access Denied','Managers and Team Leaders may only assign the Employee role. Elevated roles require a SystemAdmin.',auth,'Employees',403);
   const displayName = String(form.get('display_name')||'').trim();
   const username = String(form.get('username')||'').trim();
   const email = String(form.get('email')||'').trim()||null;
@@ -272,6 +273,8 @@ async function saveEmployee(request, db, auth, id = null) {
     if (id) {
       const current = await row(db, 'SELECT team_id FROM employees WHERE id=?', id);
       if (!current || !canManageTeam(auth, current.team_id)) return friendlyError('Access Denied','This employee is outside your management scope.',auth,'Employees',403);
+      const currentRoles = await rows(db, 'SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=?', id);
+      if (!auth.isSystemAdmin && currentRoles.some((currentRole) => isElevatedRoleName(currentRole.name))) return friendlyError('Access Denied','Team Leader, Manager and SystemAdmin accounts may only be edited by SystemAdmin.',auth,'Employees',403);
       await db.prepare(`UPDATE employees SET display_name=?,username=?,email=?,team_id=?,job_title=?,phone=?,override_rota_pattern_id=?,override_pattern_start_date=?,is_active=? WHERE id=?`)
         .bind(displayName,username,email,teamId,String(form.get('job_title')||'').trim()||null,String(form.get('phone')||'').trim()||null,Number(form.get('override_rota_pattern_id'))||null,String(form.get('override_pattern_start_date')||'').trim()||null,form.has('is_active')?1:0,id).run();
       await db.prepare('DELETE FROM employee_roles WHERE employee_id=?').bind(id).run();
@@ -281,8 +284,8 @@ async function saveEmployee(request, db, auth, id = null) {
       employeeId = result.meta?.last_row_id;
     }
     if (employeeId) await db.prepare('INSERT INTO employee_roles (employee_id,role_id) VALUES (?,?)').bind(employeeId,roleId).run();
-    if (role?.name === 'Manager') {
-      // A newly-created/promoted Manager should immediately manage their own team.
+    if (role?.name === 'Manager' || role?.name === 'TeamLeader') {
+      // Newly-created/promoted Managers and Team Leaders immediately manage their own team.
       // Existing additional team assignments are preserved.
       await db.prepare('INSERT OR IGNORE INTO team_managers (team_id,employee_id) VALUES (?,?)').bind(teamId,employeeId).run();
     } else {
@@ -372,7 +375,7 @@ export default {
       }
 
       if (path === '/employees' || /^\/employees\//.test(path)) {
-        if (!(auth.isSystemAdmin || auth.isManager)) return friendlyError('Access Denied','Employee administration requires Manager or SystemAdmin.',auth,'Employees',403);
+        if (!canManageTeamOperations(auth)) return friendlyError('Access Denied','Employee administration requires Manager, Team Leader or SystemAdmin.',auth,'Employees',403);
         if (method === 'GET' && path === '/employees') return employeesPage(env.DB, auth);
         if (method === 'POST' && path === '/employees') return saveEmployee(request, env.DB, auth);
         if (method === 'GET' && /^\/employees\/\d+\/edit$/.test(path)) return editEmployeePage(env.DB, Number(path.split('/')[2]), auth);

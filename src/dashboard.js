@@ -266,7 +266,7 @@ async function adminHealthPanel(db) {
     row(db, `SELECT COUNT(*) c FROM teams t WHERE t.is_active=1 AND NOT EXISTS(SELECT 1 FROM team_managers tm WHERE tm.team_id=t.id)`),
     row(db, 'SELECT COUNT(*) c FROM teams WHERE is_active=1 AND default_rota_pattern_id IS NULL')
   ]);
-  return `<section class="dashboard-panel admin-health"><div class="panel-heading"><div><h2>Administration</h2><p>Configuration health across SupportApp.</p></div><a href="/administration">System settings</a></div><div class="snapshot-grid"><div><strong>${employees?.c || 0}</strong><span>Active employees</span></div><div><strong>${teams?.c || 0}</strong><span>Active teams</span></div><a href="/employees"><strong>${noRoles?.c || 0}</strong><span>Without a role</span></a><a href="/teams"><strong>${noManagers?.c || 0}</strong><span>Teams without a manager</span></a><a href="/teams"><strong>${noRota?.c || 0}</strong><span>Teams without a rota</span></a></div></section>`;
+  return `<section class="dashboard-panel admin-health"><div class="panel-heading"><div><h2>Administration</h2><p>Configuration health across SupportApp.</p></div><a href="/administration">System settings</a></div><div class="snapshot-grid"><div><strong>${employees?.c || 0}</strong><span>Active employees</span></div><div><strong>${teams?.c || 0}</strong><span>Active teams</span></div><a href="/employees"><strong>${noRoles?.c || 0}</strong><span>Without a role</span></a><a href="/teams"><strong>${noManagers?.c || 0}</strong><span>Teams without management cover</span></a><a href="/teams"><strong>${noRota?.c || 0}</strong><span>Teams without a rota</span></a></div></section>`;
 }
 
 async function employeeDashboard(db, user, appPage, date, positions, onCall, gatekeepers) {

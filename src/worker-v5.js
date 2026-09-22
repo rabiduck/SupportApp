@@ -6,6 +6,7 @@ import { createLocalSession, clearSessionCookie, destroyLocalSession, sessionCoo
 import { ensureSchema } from './schema.js';
 import { dashboardPage } from './dashboard.js';
 import { closingCoverImpact, closingCoverOverrideControl, closingCoverWarningHtml } from './closing-cover.js';
+import { canManageTeam, canManageTeamOperations, hasScopedTeamManagementRole, isElevatedRoleName } from './permissions.js';
 
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -30,6 +31,22 @@ async function rows(db, sql, ...params) {
 
 async function row(db, sql, ...params) {
   return db.prepare(sql).bind(...params).first();
+}
+
+async function teamApprovers(db, teamId, excludeEmployeeId = null) {
+  const exclude = excludeEmployeeId ? ' AND e.id<>?' : '';
+  const params = excludeEmployeeId ? [teamId, excludeEmployeeId] : [teamId];
+  return rows(db, `SELECT DISTINCT e.id FROM employees e
+    JOIN employee_roles er ON er.employee_id=e.id
+    JOIN roles r ON r.id=er.role_id
+    JOIN team_managers tm ON tm.employee_id=e.id
+    WHERE e.is_active=1 AND r.name IN ('Manager','TeamLeader') AND tm.team_id=?${exclude}`, ...params);
+}
+
+function managementScope(user, column = 'e.team_id') {
+  if (user.isSystemAdmin) return { sql: '', params: [] };
+  const teamIds = (user.managedTeamIds || []).map(Number);
+  return { sql: ` AND ${column} IN (${teamIds.map(() => '?').join(',') || 'NULL'})`, params: teamIds };
 }
 
 function redirect(request, path, headers = {}) {
@@ -128,7 +145,7 @@ async function enrichUser(db, employee) {
 }
 
 function nav(user, active = '', pdpOutstanding = 0) {
-  const isAdmin = user.isManager || user.isTeamLeader || user.isSystemAdmin;
+  const isAdmin = canManageTeamOperations(user);
   const sections = [
     {name:'Rota', items:[
       ['Calendar','/rota','Rota'],
@@ -603,7 +620,7 @@ async function decorateResponse(response, user, path, localAuth = false, db = nu
   const signout = localAuth ? ' · <a href="/logout" style="color:inherit">Sign out</a>' : '';
   const count = db ? await unreadCount(db, user.id) : 0;
   text = text.replace(/<div class="user-area">[\s\S]*?<\/div>/, `<div class="user-area">${userAreaHtml(user, count, signout)}</div>`);
-  if (localAuth && path === '/employees' && (user.isManager || user.isSystemAdmin)) {
+  if (localAuth && path === '/employees' && canManageTeamOperations(user)) {
     text = text.replace(/<a class="button secondary" href="\/employees\/(\d+)\/edit">Edit<\/a>/g, (match, id) => `${match}<a class="button secondary" href="/employees/${id}/password">Password</a>`);
   }
   // Most application pages are rendered by the older workers and then decorated here,
@@ -624,7 +641,7 @@ async function passwordPage(request, db, currentUser, targetId) {
   const target = await row(db, `SELECT e.id,e.display_name,e.team_id,COALESCE(GROUP_CONCAT(r.name, ', '),'Employee') AS roles FROM employees e LEFT JOIN employee_roles er ON er.employee_id=e.id LEFT JOIN roles r ON r.id=er.role_id WHERE e.id=? GROUP BY e.id`, targetId);
   if (!target) return accessPage('Employee not found', 'The requested employee does not exist.', 404);
   const targetRoles = String(target.roles || '').split(',').map((x) => x.trim());
-  const inScope = currentUser.isSystemAdmin || (currentUser.isManager && currentUser.managedTeamIds.includes(Number(target.team_id)) && !targetRoles.includes('Manager') && !targetRoles.includes('SystemAdmin'));
+  const inScope = currentUser.isSystemAdmin || (canManageTeam(currentUser, target.team_id) && !targetRoles.some(isElevatedRoleName));
   if (!inScope) return accessPage('Access Denied', 'You cannot manage login credentials for this employee.', 403);
 
   if (request.method.toUpperCase() === 'POST') {
@@ -747,20 +764,29 @@ async function gatekeeperEffectiveFor(db,teamId,dateText){
 async function gatekeepersPage(request,db,user){
  const teams=await rows(db,'SELECT id,name,gatekeeper_enabled FROM teams WHERE is_active=1 AND gatekeeper_enabled=1 ORDER BY name');let cards='';
  if(!teams.length) cards='<div class="card"><p class="muted">No teams are currently configured for Gatekeeper rotation.</p></div>';
- for(const t of teams){const members=await gatekeeperMembers(db,t.id),set=await row(db,'SELECT * FROM gatekeeper_settings WHERE team_id=?',t.id),eff=await gatekeeperEffectiveFor(db,t.id,mondayText(new Date().toISOString().slice(0,10)));
- cards+=`<div class="card section-gap"><h2>${h(t.name)}</h2><p><strong>This week:</strong> ${eff?h(eff.display_name):'<span class="muted">Not configured</span>'}</p><p><strong>Rotation:</strong> ${members.map(m=>h(m.display_name)).join(' → ')||'<span class="muted">No active employees</span>'}</p>${(user.isManager||user.isTeamLeader)&&members.length>1?`<table><thead><tr><th>Order</th><th>Employee</th><th></th></tr></thead><tbody>${members.map((m,i)=>`<tr><td>${i+1}</td><td>${h(m.display_name)}</td><td><div class="action-bar"><form method="post" action="/gatekeepers/${t.id}/member/${m.id}/move"><input type="hidden" name="direction" value="up"><button class="secondary" ${i===0?'disabled':''}>↑</button></form><form method="post" action="/gatekeepers/${t.id}/member/${m.id}/move"><input type="hidden" name="direction" value="down"><button class="secondary" ${i===members.length-1?'disabled':''}>↓</button></form></div></td></tr>`).join('')}</tbody></table>`:''}${eff&&Number(eff.employee_id)===Number(user.id)?`<div class="action-bar"><a class="button secondary" href="/gatekeeper/cover?team=${t.id}&date=${mondayText(new Date().toISOString().slice(0,10))}&scope=week">Request Cover</a></div>`:''}${(user.isManager||user.isTeamLeader)?`<div class="action-bar"><a class="button secondary" href="/gatekeeper/override?team=${t.id}&date=${mondayText(new Date().toISOString().slice(0,10))}&scope=week">Override This Week</a></div><form method="post" action="/gatekeepers/${t.id}/anchor"><label>Anchor Monday<input type="date" name="anchor_monday" value="${h(set?.anchor_monday||mondayText(new Date().toISOString().slice(0,10)))}" required></label><label>Anchor Employee<select name="anchor_employee_id">${members.map(m=>`<option value="${m.id}" ${Number(m.id)===Number(set?.anchor_employee_id)?'selected':''}>${h(m.display_name)}</option>`).join('')}</select></label><button>Save Rotation Anchor</button></form>`:''}</div>`;}
+ for(const t of teams){
+  const members=await gatekeeperMembers(db,t.id),set=await row(db,'SELECT * FROM gatekeeper_settings WHERE team_id=?',t.id),eff=await gatekeeperEffectiveFor(db,t.id,mondayText(new Date().toISOString().slice(0,10))),canManage=canManageTeam(user,t.id);
+  cards+=`<div class="card section-gap"><h2>${h(t.name)}</h2><p><strong>This week:</strong> ${eff?h(eff.display_name):'<span class="muted">Not configured</span>'}</p><p><strong>Rotation:</strong> ${members.map(m=>h(m.display_name)).join(' → ')||'<span class="muted">No active employees</span>'}</p>${canManage&&members.length>1?`<table><thead><tr><th>Order</th><th>Employee</th><th></th></tr></thead><tbody>${members.map((m,i)=>`<tr><td>${i+1}</td><td>${h(m.display_name)}</td><td><div class="action-bar"><form method="post" action="/gatekeepers/${t.id}/member/${m.id}/move"><input type="hidden" name="direction" value="up"><button class="secondary" ${i===0?'disabled':''}>↑</button></form><form method="post" action="/gatekeepers/${t.id}/member/${m.id}/move"><input type="hidden" name="direction" value="down"><button class="secondary" ${i===members.length-1?'disabled':''}>↓</button></form></div></td></tr>`).join('')}</tbody></table>`:''}${eff&&Number(eff.employee_id)===Number(user.id)?`<div class="action-bar"><a class="button secondary" href="/gatekeeper/cover?team=${t.id}&date=${mondayText(new Date().toISOString().slice(0,10))}&scope=week">Request Cover</a></div>`:''}${canManage?`<div class="action-bar"><a class="button secondary" href="/gatekeeper/override?team=${t.id}&date=${mondayText(new Date().toISOString().slice(0,10))}&scope=week">Override This Week</a></div><form method="post" action="/gatekeepers/${t.id}/anchor"><label>Anchor Monday<input type="date" name="anchor_monday" value="${h(set?.anchor_monday||mondayText(new Date().toISOString().slice(0,10)))}" required></label><label>Anchor Employee<select name="anchor_employee_id">${members.map(m=>`<option value="${m.id}" ${Number(m.id)===Number(set?.anchor_employee_id)?'selected':''}>${h(m.display_name)}</option>`).join('')}</select></label><button>Save Rotation Anchor</button></form>`:''}</div>`;
+ }
  return appPage('Gatekeepers','Monday–Friday gatekeeper rotation by team.',cards,user,'Gatekeepers',db);
 }
 async function gatekeeperMove(request,db,user,teamId,employeeId){
- if(!(user.isManager||user.isTeamLeader)) return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ if(!canManageTeam(user,teamId)) return accessPage('Access Denied','This team is outside your management scope.',403);
  const members=await gatekeeperMembers(db,teamId),i=members.findIndex(m=>Number(m.id)===Number(employeeId)),form=await request.formData(),direction=String(form.get('direction')||''),j=direction==='up'?i-1:i+1;
  if(i>=0&&j>=0&&j<members.length){for(let n=0;n<members.length;n++) await db.prepare('UPDATE employees SET gatekeeper_order=? WHERE id=?').bind(n+1,members[n].id).run();await db.batch([db.prepare('UPDATE employees SET gatekeeper_order=? WHERE id=?').bind(j+1,members[i].id),db.prepare('UPDATE employees SET gatekeeper_order=? WHERE id=?').bind(i+1,members[j].id)]);}
  return redirect(request,'/gatekeepers');
 }
-async function gatekeeperAnchor(request,db,user,teamId){if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const f=await request.formData();await db.prepare('INSERT INTO gatekeeper_settings(team_id,anchor_monday,anchor_employee_id) VALUES(?,?,?) ON CONFLICT(team_id) DO UPDATE SET anchor_monday=excluded.anchor_monday,anchor_employee_id=excluded.anchor_employee_id').bind(teamId,String(f.get('anchor_monday')),Number(f.get('anchor_employee_id'))).run();return redirect(request,'/gatekeepers');}
+async function gatekeeperAnchor(request,db,user,teamId){
+ if(!canManageTeam(user,teamId))return accessPage('Access Denied','This team is outside your management scope.',403);
+ const f=await request.formData(),employeeId=Number(f.get('anchor_employee_id'));
+ const member=await row(db,'SELECT id FROM employees WHERE id=? AND team_id=? AND is_active=1',employeeId,teamId);
+ if(!member)return errorPage('Choose an active employee from this team.',user,400);
+ await db.prepare('INSERT INTO gatekeeper_settings(team_id,anchor_monday,anchor_employee_id) VALUES(?,?,?) ON CONFLICT(team_id) DO UPDATE SET anchor_monday=excluded.anchor_monday,anchor_employee_id=excluded.anchor_employee_id').bind(teamId,String(f.get('anchor_monday')),employeeId).run();
+ return redirect(request,'/gatekeepers');
+}
 async function gatekeeperOverridePage(request,db,user){
- if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);const url=new URL(request.url),teamId=Number(url.searchParams.get('team')),date=String(url.searchParams.get('date')||''),scope=String(url.searchParams.get('scope')||'day'),members=await gatekeeperMembers(db,teamId),start=scope==='week'?mondayText(date):date,end=scope==='week'?(()=>{const d=new Date(start+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+4);return d.toISOString().slice(0,10)})():date;
- if(request.method.toUpperCase()==='POST'){const f=await request.formData(),eid=Number(f.get('employee_id')),notes=String(f.get('notes')||'').trim()||null;await db.prepare("INSERT INTO gatekeeper_overrides(team_id,start_date,end_date,employee_id,source,notes,recorded_by) VALUES(?,?,?,?,'manager',?,?)").bind(teamId,start,end,eid,notes,user.id).run();await createNotification(db,eid,'gatekeeper_override',`Gatekeeper assigned by ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,'/gatekeepers');return redirect(request,'/gatekeepers');}
+ const url=new URL(request.url),teamId=Number(url.searchParams.get('team')),date=String(url.searchParams.get('date')||''),scope=String(url.searchParams.get('scope')||'day');if(!canManageTeam(user,teamId))return accessPage('Access Denied','This team is outside your management scope.',403);const members=await gatekeeperMembers(db,teamId),start=scope==='week'?mondayText(date):date,end=scope==='week'?(()=>{const d=new Date(start+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+4);return d.toISOString().slice(0,10)})():date;
+ if(request.method.toUpperCase()==='POST'){const f=await request.formData(),eid=Number(f.get('employee_id')),notes=String(f.get('notes')||'').trim()||null;if(!members.some((member)=>Number(member.id)===eid))return errorPage('Choose an active employee from this team.',user,400);await db.prepare("INSERT INTO gatekeeper_overrides(team_id,start_date,end_date,employee_id,source,notes,recorded_by) VALUES(?,?,?,?,'manager',?,?)").bind(teamId,start,end,eid,notes,user.id).run();await createNotification(db,eid,'gatekeeper_override',`Gatekeeper assigned by ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,'/gatekeepers');return redirect(request,'/gatekeepers');}
  return appPage('Override Gatekeeper',scope==='week'?'Override Monday–Friday.':'Override one day.',`<div class="form-card"><form method="post"><label>Employee<select name="employee_id">${members.map(m=>`<option value="${m.id}">${h(m.display_name)}</option>`).join('')}</select></label><label>Notes<textarea name="notes"></textarea></label><button>Apply Override</button></form></div>`,user,'Gatekeepers',db);
 }
 
@@ -826,9 +852,10 @@ async function onCallCoverReview(request,db,user,id){
 
 async function recordAttendancePage(request,db,user,kind){
  const url=new URL(request.url),employee=String(url.searchParams.get('employee')||''),date=String(url.searchParams.get('date')||'');
- if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ if(!canManageTeamOperations(user))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
  const target=await row(db,'SELECT id,display_name,team_id FROM employees WHERE display_name=? AND is_active=1',employee);
  if(!target||!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Invalid employee or date.',user,400);
+ if(!canManageTeam(user,target.team_id))return accessPage('Access Denied','This employee is outside your management scope.',403);
  const types=kind==='absence'?await rows(db,'SELECT id,name FROM absence_types WHERE is_active=1 ORDER BY name'):[];
  if(request.method.toUpperCase()==='POST'){
   const form=await request.formData(),end=String(form.get('end_date')||date),sp=String(form.get('start_portion')||'FULL'),ep=String(form.get('end_portion')||sp),notes=String(form.get('notes')||'').trim()||null;
@@ -843,10 +870,11 @@ async function recordAttendancePage(request,db,user,kind){
 }
 
 async function editAttendancePage(request,db,user,kind,id){
- if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ if(!canManageTeamOperations(user))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
  const table=kind==='absence'?'absences':'sickness';
  const item=await row(db,`SELECT x.*,e.display_name,e.team_id FROM ${table} x JOIN employees e ON e.id=x.employee_id WHERE x.id=? AND x.is_active=1`,id);
  if(!item)return errorPage(`${kind==='absence'?'Absence':'Sickness'} record not found.`,user,404);
+ if(!canManageTeam(user,item.team_id))return accessPage('Access Denied','This employee is outside your management scope.',403);
  const types=kind==='absence'?await rows(db,'SELECT id,name FROM absence_types WHERE is_active=1 OR id=? ORDER BY name',item.absence_type_id):[];
  if(request.method.toUpperCase()==='POST'){
    const form=await request.formData(),action=String(form.get('action')||'save');
@@ -869,10 +897,11 @@ async function editAttendancePage(request,db,user,kind,id){
 }
 
 async function shiftOverridePage(request,db,user){
- if(!(user.isManager||user.isTeamLeader))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
+ if(!canManageTeamOperations(user))return accessPage('Access Denied','Manager or Team Leader access is required.',403);
  const url=new URL(request.url),employee=String(url.searchParams.get('employee')||''),date=String(url.searchParams.get('date')||'');
- const target=await row(db,'SELECT id,display_name FROM employees WHERE display_name=? AND is_active=1',employee);
+ const target=await row(db,'SELECT id,display_name,team_id FROM employees WHERE display_name=? AND is_active=1',employee);
  if(!target||!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Invalid employee or date.',user,400);
+ if(!canManageTeam(user,target.team_id))return accessPage('Access Denied','This employee is outside your management scope.',403);
  const existing=await row(db,'SELECT * FROM shift_overrides WHERE employee_id=? AND override_date=? AND is_active=1 ORDER BY id DESC LIMIT 1',target.id,date),shifts=await rows(db,'SELECT id,name,code,start_time,end_time FROM shift_types WHERE is_active=1 ORDER BY is_working_day,start_time,name');
  if(request.method.toUpperCase()==='POST'){
   const form=await request.formData(),action=String(form.get('action')||'save');
@@ -891,7 +920,7 @@ async function dayActionsPage(request,db,user){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return errorPage('Choose a valid date from the rota.',user,400);
  const target=await row(db,'SELECT id,display_name,team_id FROM employees WHERE display_name=? AND is_active=1 LIMIT 1',employee);
  if(!target)return errorPage('Employee not found.',user,404);
- const own=Number(target.id)===Number(user.id), elevated=user.isManager||user.isTeamLeader;
+ const own=Number(target.id)===Number(user.id), elevated=canManageTeam(user,target.team_id);
  if(!own&&!elevated)return accessPage('Access Denied','You cannot view day actions for another employee.',403);
  const leave=await row(db,"SELECT * FROM leave_requests WHERE employee_id=? AND start_date<=? AND end_date>=? AND status IN ('pending','approved') ORDER BY CASE status WHEN 'approved' THEN 0 ELSE 1 END,id DESC LIMIT 1",target.id,date,date);
  const wfh=await row(db,"SELECT * FROM wfh_requests WHERE employee_id=? AND request_date=? AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1",target.id,date);
@@ -909,12 +938,12 @@ async function dayActionsPage(request,db,user){
    if(sickness)info+=`<p><strong>Sickness:</strong> ${h(sickness.start_date)}${sickness.end_date!==sickness.start_date?` → ${h(sickness.end_date)}`:''} <a href="/sickness/${sickness.id}/edit">Edit</a></p>`;
    if(!leave&&!wfh&&!absence&&!sickness)info+='<p class="muted">No leave, WFH, absence or sickness activity recorded for this day.</p>';
    info+='</div>';
-   if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Shift</h2>${shiftOverride?`<p><strong>Override:</strong> ${h(shiftOverride.shift_name)} (${h(shiftOverride.shift_code)})</p>`:''}<a class="button secondary" href="/shift-override?employee=${encodeURIComponent(target.display_name)}&date=${date}">${shiftOverride?'Change Override':'Change Shift'}</a></div>`;
-   if(targetIsGatekeeper) info+=`<div class="card section-gap"><h2>Gatekeeper</h2><p><strong>${h(target.display_name)}</strong> is Gatekeeper for this day.</p><div class="action-bar">${own?`<a class="button secondary" href="/gatekeeper/cover?team=${target.team_id}&date=${date}&scope=day">Request Day Cover</a>`:''}${(user.isManager||user.isTeamLeader)?`<a class="button secondary" href="/gatekeeper/override?team=${target.team_id}&date=${date}&scope=day">Override Day</a>`:''}</div></div>`;
-   if(targetIsOnCall) info+=`<div class="card section-gap"><h2>On Call</h2><p><strong>${h(target.display_name)}</strong> is On Call for this day.</p><div class="action-bar">${own?`<a class="button secondary" href="/on-call/cover?date=${date}&scope=day">Request Day Cover</a>`:''}${(user.isManager||user.isTeamLeader)?`<a class="button secondary" href="/on-call/override?date=${date}&scope=day">Override Day</a>`:''}</div></div>`;
-   if(user.isManager||user.isTeamLeader) info+=`<div class="card section-gap"><h2>Attendance</h2><div class="action-bar"><a class="button" href="/absence/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Absence</a><a class="button secondary" href="/sickness/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Sickness</a></div></div>`;
-   if(user.isManager&&user.managedTeamIds.includes(Number(target.team_id))){
-     if(leave?.status==='approved')info+=`<div class="card section-gap"><h2>Manager Actions</h2><div class="action-bar"><a class="button secondary" href="/leave-requests/${leave.id}/edit">Modify Employee Leave</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form></div></div>`;
+   if(elevated) info+=`<div class="card section-gap"><h2>Shift</h2>${shiftOverride?`<p><strong>Override:</strong> ${h(shiftOverride.shift_name)} (${h(shiftOverride.shift_code)})</p>`:''}<a class="button secondary" href="/shift-override?employee=${encodeURIComponent(target.display_name)}&date=${date}">${shiftOverride?'Change Override':'Change Shift'}</a></div>`;
+   if(targetIsGatekeeper) info+=`<div class="card section-gap"><h2>Gatekeeper</h2><p><strong>${h(target.display_name)}</strong> is Gatekeeper for this day.</p><div class="action-bar">${elevated?`<a class="button secondary" href="/gatekeeper/override?team=${target.team_id}&date=${date}&scope=day">Override Day</a>`:''}</div></div>`;
+   if(targetIsOnCall) info+=`<div class="card section-gap"><h2>On Call</h2><p><strong>${h(target.display_name)}</strong> is On Call for this day.</p><div class="action-bar">${elevated?`<a class="button secondary" href="/on-call/override?date=${date}&scope=day">Override Day</a>`:''}</div></div>`;
+   if(elevated) info+=`<div class="card section-gap"><h2>Attendance</h2><div class="action-bar"><a class="button" href="/absence/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Absence</a><a class="button secondary" href="/sickness/new?employee=${encodeURIComponent(target.display_name)}&date=${date}">Record Sickness</a></div></div>`;
+   if(canManageTeam(user,target.team_id)){
+     if(leave?.status==='approved')info+=`<div class="card section-gap"><h2>Management Actions</h2><div class="action-bar"><a class="button secondary" href="/leave-requests/${leave.id}/edit">Modify Employee Leave</a><form method="post" action="/leave/${leave.id}/cancel"><button class="secondary">Cancel Leave</button></form></div></div>`;
      if(wfh&&['pending','approved'].includes(wfh.status))info+=`<div class="card section-gap"><h2>WFH</h2><div class="action-bar">${wfh.status==='pending'?`<a class="button" href="/wfh-requests/${wfh.id}">Review Request</a>`:''}<form method="post" action="/wfh/${wfh.id}/cancel"><button class="secondary">Cancel WFH</button></form></div></div>`;
    }
    return appPage('Day Actions',date,info+`<div class="section-gap"><a class="button secondary" href="/rota?week=${date}">Back to Rota</a></div>`,user,'Rota',db);
@@ -939,7 +968,7 @@ async function quickLeavePage(request,db,user){
    const form=await request.formData(),notes=String(form.get('employee_notes')||'').trim()||null,annualType=await row(db,"SELECT id FROM leave_types WHERE code='ANNUAL' LIMIT 1"),managerRecord=user.isManager;
    if(!annualType)return errorPage('Annual Leave type is not configured.',user,500);
    const made=await db.prepare("INSERT INTO leave_requests(employee_id,leave_type_id,start_date,end_date,start_portion,end_portion,status,employee_notes,reviewed_by,reviewed_at,manager_notes,entry_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(user.id,annualType.id,date,date,portion,portion,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
-   if(!managerRecord){const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);for(const m of managers)await createNotification(db,m.id,'leave_request',`Annual leave request · ${user.display_name}`,`${date} ${portion}`,`/leave-requests/${Number(made.meta?.last_row_id)}`);}
+   if(!managerRecord){const approvers=await teamApprovers(db,user.team_id,user.id);for(const approver of approvers)await createNotification(db,approver.id,'leave_request',`Annual leave request · ${user.display_name}`,`${date} ${portion}`,`/leave-requests/${Number(made.meta?.last_row_id)}`);}
    return redirect(request,`/rota?week=${date}`);
  }
  const label=portion==='FULL'?'Full Day':portion+' half day';
@@ -963,7 +992,7 @@ async function wfhRequestPage(request,db,user){
   if(request.method.toUpperCase()==='POST'){
     const form=await request.formData(),notes=String(form.get('employee_notes')||'').trim()||null,managerRecord=user.isManager;
     const made=await db.prepare("INSERT INTO wfh_requests(employee_id,request_date,status,employee_notes,reviewed_by,reviewed_at,manager_notes,entry_mode) VALUES(?,?,?,?,?,?,?,?)").bind(user.id,date,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
-    if(!managerRecord){const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);for(const m of managers)await createNotification(db,m.id,'wfh_request',`WFH request · ${user.display_name}`,date,`/wfh-requests/${Number(made.meta?.last_row_id)}`);}
+    if(!managerRecord){const approvers=await teamApprovers(db,user.team_id,user.id);for(const approver of approvers)await createNotification(db,approver.id,'wfh_request',`WFH request · ${user.display_name}`,date,`/wfh-requests/${Number(made.meta?.last_row_id)}`);}
     return redirect(request,`/rota?week=${date}`);
   }
   const content=`<div class="form-card"><h2>${user.isManager?'Record WFH':'Request WFH'}</h2><p><strong>${h(date)}</strong></p>${user.isManager?'<p class="muted">Manager WFH is recorded directly as approved because authorisation takes place outside SupportApp.</p>':''}<form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="employee_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">${user.isManager?'Record WFH':'Submit Request'}</button><a class="button secondary" href="/rota?week=${date}">Cancel</a></div></form></div>`;
@@ -973,19 +1002,20 @@ async function wfhRequestPage(request,db,user){
 async function cancelWfh(request,db,user,id){
  const item=await row(db,`SELECT w.*,e.team_id,e.display_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id WHERE w.id=?`,id);
  if(!item)return errorPage('WFH request not found.',user,404);
- const own=Number(item.employee_id)===Number(user.id),managed=user.isManager&&user.managedTeamIds.includes(Number(item.team_id));
+ const own=Number(item.employee_id)===Number(user.id),managed=canManageTeam(user,item.team_id);
  if(!own&&!managed)return accessPage('Access Denied','You cannot cancel this WFH record.',403);
  if(!['pending','approved'].includes(item.status))return errorPage('This WFH record can no longer be cancelled.',user,400);
  await db.prepare("UPDATE wfh_requests SET status='cancelled',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=?").bind(user.id,own?'Cancelled by employee':'Cancelled by Manager',id).run();
  if(own){
-   const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,item.team_id,user.id);
-   for(const m of managers)await createNotification(db,m.id,'wfh_cancelled',`WFH cancelled · ${item.display_name}`,item.request_date,'/wfh-requests');
+   const approvers=await teamApprovers(db,item.team_id,user.id);
+   for(const approver of approvers)await createNotification(db,approver.id,'wfh_cancelled',`WFH cancelled · ${item.display_name}`,item.request_date,'/wfh-requests');
  } else await createNotification(db,item.employee_id,'wfh_cancelled_manager',`WFH cancelled by ${user.display_name}`,item.request_date,'/rota');
  return redirect(request,own?`/rota?week=${item.request_date}`:'/wfh-requests');
 }
 
 async function wfhRequestsPage(request,db,user){
- const reqs=await rows(db,`SELECT w.*,e.display_name,t.name team_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id JOIN teams t ON t.id=e.team_id WHERE e.team_id IN (${user.managedTeamIds.map(()=>'?').join(',')||'NULL'}) ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END,w.request_date DESC`,...user.managedTeamIds);
+ const scope=managementScope(user);
+ const reqs=await rows(db,`SELECT w.*,e.display_name,t.name team_name FROM wfh_requests w JOIN employees e ON e.id=w.employee_id JOIN teams t ON t.id=e.team_id WHERE 1=1${scope.sql} ORDER BY CASE w.status WHEN 'pending' THEN 0 ELSE 1 END,w.request_date DESC`,...scope.params);
  const table=reqs.length?`<table><thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>${reqs.map(r=>`<tr><td><strong>${h(r.display_name)}</strong></td><td>${h(r.team_name)}</td><td>${h(r.request_date)}</td><td>${leaveStatus(r.status)}</td><td><a class="button secondary" href="/wfh-requests/${r.id}">${r.status==='pending'?'Review':'View'}</a></td></tr>`).join('')}</tbody></table>`:'<div class="empty">No WFH requests.</div>';
  return appPage('WFH Requests','Review working from home requests for your managed teams.',`<div class="table-card">${table}</div>`,user,'WFH Requests',db);
 }
@@ -993,7 +1023,7 @@ async function wfhRequestsPage(request,db,user){
 async function wfhReviewPage(request,db,user,id){
  const item=await row(db,`SELECT w.*,e.display_name,e.team_id FROM wfh_requests w JOIN employees e ON e.id=w.employee_id WHERE w.id=?`,id);
  if(!item)return errorPage('WFH request not found.',user,404);
- if(!user.managedTeamIds.includes(Number(item.team_id)))return accessPage('Access Denied','This WFH request is outside your management scope.',403);
+ if(!canManageTeam(user,item.team_id))return accessPage('Access Denied','This WFH request is outside your management scope.',403);
  const closingImpact=item.status==='pending'?await closingCoverImpact(db,{type:'wfh',employeeId:item.employee_id,startDate:item.request_date,endDate:item.request_date}):null;
  let closingOverrideError=false;
  if(request.method.toUpperCase()==='POST'&&item.status==='pending'){
@@ -1008,7 +1038,7 @@ async function wfhReviewPage(request,db,user,id){
  }
  const managerCancel=['pending','approved'].includes(item.status)?`<form method="post" action="/wfh/${item.id}/cancel" class="section-gap"><button class="secondary">${item.status==='pending'?'Cancel Request':'Cancel WFH'}</button></form>`:'';
  const closingWarning=item.status==='pending'?closingCoverWarningHtml(closingImpact,{overrideError:closingOverrideError}):'';
- const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${managerCancel}${closingWarning}${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
+ const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Date:</strong> ${h(item.request_date)}<br><strong>Status:</strong> ${h(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${managerCancel}${closingWarning}${item.status==='pending'?`<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Management Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected" class="secondary">Decline</button></div></form></div>`:''}`;
  return appPage('Review WFH Request','Review a single-day WFH request.',content,user,'WFH Requests',db);
 }
 
@@ -1039,8 +1069,8 @@ async function myLeavePage(request, db, user) {
         .bind(user.id,annualType.id,startDate,endDate,startPortion,effectiveEndPortion,managerRecord?'approved':'pending',notes,managerRecord?user.id:null,managerRecord?new Date().toISOString():null,managerRecord?'Recorded directly by Manager':null,managerRecord?'MANAGER_RECORD':'REQUEST').run();
       const leaveId = Number(created.meta?.last_row_id);
       if (!managerRecord) {
-        const managers = await rows(db, `SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id LEFT JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`, user.team_id,user.id);
-        for (const manager of managers) await createNotification(db, manager.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate} ${startPortion}${endDate!==startDate?` → ${endDate} ${effectiveEndPortion}`:''}`, `/leave-requests/${leaveId}`);
+        const approvers = await teamApprovers(db, user.team_id, user.id);
+        for (const approver of approvers) await createNotification(db, approver.id, 'leave_request', `Annual leave request · ${user.display_name}`, `${startDate} ${startPortion}${endDate!==startDate?` → ${endDate} ${effectiveEndPortion}`:''}`, `/leave-requests/${leaveId}`);
       }
       return redirect(request, '/leave');
     }
@@ -1070,9 +1100,9 @@ async function cancelOwnLeave(request, db, user, id) {
   await db.prepare("UPDATE leave_requests SET status='cancelled', reviewed_by=?, reviewed_at=?, manager_notes=? WHERE id=?")
     .bind(user.id,new Date().toISOString(),wasPending?'Withdrawn by employee':'Cancelled by employee',id).run();
   if(!user.isManager){
-    const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);
+    const approvers=await teamApprovers(db,user.team_id,user.id);
     const action=wasPending?'withdrawn':'cancelled';
-    for(const manager of managers) await createNotification(db,manager.id,`leave_${action}`,`Annual leave ${action} · ${user.display_name}`,`${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}`,'/leave-requests');
+    for(const approver of approvers) await createNotification(db,approver.id,`leave_${action}`,`Annual leave ${action} · ${user.display_name}`,`${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}`,'/leave-requests');
   }
   return redirect(request,'/leave');
 }
@@ -1090,8 +1120,8 @@ async function editOwnPendingLeave(request, db, user, id) {
     const effective=end===start?sp:ep;
     await db.prepare('UPDATE leave_requests SET start_date=?,end_date=?,start_portion=?,end_portion=?,employee_notes=? WHERE id=?').bind(start,end,sp,effective,notes,id).run();
     if(!direct){
-      const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);
-      for(const manager of managers) await createNotification(db,manager.id,'leave_modified',`Pending leave updated · ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,`/leave-requests/${id}`);
+      const approvers=await teamApprovers(db,user.team_id,user.id);
+      for(const approver of approvers) await createNotification(db,approver.id,'leave_modified',`Pending leave updated · ${user.display_name}`,`${start}${end!==start?` → ${end}`:''}`,`/leave-requests/${id}`);
     }
     return redirect(request,'/leave');
   }
@@ -1113,8 +1143,8 @@ async function changeOwnApprovedLeave(request, db, user, id) {
     const effective=end===start?sp:ep;
     const made=await db.prepare("INSERT INTO leave_change_requests (leave_request_id,employee_id,start_date,end_date,start_portion,end_portion,employee_notes) VALUES (?,?,?,?,?,?,?)").bind(id,user.id,start,end,sp,effective,notes).run();
     const changeId=Number(made.meta?.last_row_id);
-    const managers=await rows(db,`SELECT DISTINCT e.id FROM employees e JOIN employee_roles er ON er.employee_id=e.id JOIN roles r ON r.id=er.role_id JOIN team_managers tm ON tm.employee_id=e.id WHERE e.is_active=1 AND r.name='Manager' AND tm.team_id=? AND e.id<>?`,user.team_id,user.id);
-    for(const m of managers)await createNotification(db,m.id,'leave_change_request',`Annual leave modification · ${user.display_name}`,`${item.start_date} → ${item.end_date} changed to ${start} → ${end}`,`/leave-changes/${changeId}`);
+    const approvers=await teamApprovers(db,user.team_id,user.id);
+    for(const approver of approvers)await createNotification(db,approver.id,'leave_change_request',`Annual leave modification · ${user.display_name}`,`${item.start_date} → ${item.end_date} changed to ${start} → ${end}`,`/leave-changes/${changeId}`);
     return redirect(request,'/leave');
   }
   const opt=(v,label,current)=>`<option value="${v}" ${current===v?'selected':''}>${label}</option>`;
@@ -1125,8 +1155,8 @@ async function changeOwnApprovedLeave(request, db, user, id) {
 async function managerEditEmployeeLeave(request,db,user,id){
   const item=await row(db,`SELECT lr.*,e.display_name,e.team_id FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id WHERE lr.id=?`,id);
   if(!item)return errorPage('Leave request not found.',user,404);
-  if(!user.managedTeamIds.includes(Number(item.team_id)))return accessPage('Access Denied','This leave record is outside your management scope.',403);
-  if(item.status!=='approved')return errorPage('Only approved leave can be modified through this Manager action.',user,400);
+  if(!canManageTeam(user,item.team_id))return accessPage('Access Denied','This leave record is outside your management scope.',403);
+  if(item.status!=='approved')return errorPage('Only approved leave can be modified through this management action.',user,400);
   if(request.method.toUpperCase()==='POST'){
     const form=await request.formData(),start=String(form.get('start_date')||''),end=String(form.get('end_date')||''),sp=String(form.get('start_portion')||'FULL').toUpperCase(),ep=String(form.get('end_portion')||'FULL').toUpperCase(),notes=String(form.get('manager_notes')||'').trim()||null;
     if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||end<start||!['FULL','AM','PM'].includes(sp)||!['FULL','AM','PM'].includes(ep))return errorPage('Enter a valid revised leave period.',user,400);
@@ -1138,13 +1168,13 @@ async function managerEditEmployeeLeave(request,db,user,id){
   const opt=(v,label,current)=>`<option value="${v}" ${current===v?'selected':''}>${label}</option>`;
   const historical=item.end_date<new Date().toISOString().slice(0,10);
   const content=`<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Current record:</strong> ${h(item.start_date)} ${h(item.start_portion||'FULL')} → ${h(item.end_date)} ${h(item.end_portion||'FULL')}</p>${historical?'<div class="notice"><strong>Historical leave</strong><br>This change will retrospectively alter the employee’s leave record and entitlement calculation.</div>':''}</div><div class="form-card section-gap"><h2>Modify Employee Leave</h2><form method="post"><label>Start Date<input type="date" name="start_date" value="${h(item.start_date)}" required></label><label>Start Portion<select name="start_portion">${opt('FULL','Full Day',item.start_portion)}${opt('AM','AM (Half Day)',item.start_portion)}${opt('PM','PM (Half Day)',item.start_portion)}</select></label><label>End Date<input type="date" name="end_date" value="${h(item.end_date)}" required></label><label>End Portion<select name="end_portion">${opt('FULL','Full Day',item.end_portion)}${opt('AM','AM (Half Day)',item.end_portion)}${opt('PM','PM (Half Day)',item.end_portion)}</select></label><label>Reason / Note <span class="muted">(recommended)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit">Apply Change</button><a class="button secondary" href="/leave-requests/${id}">Cancel</a></div></form></div>`;
-  return appPage('Modify Employee Leave','Managers can directly correct approved leave, including historical records.',content,user,'Leave Requests',db);
+  return appPage('Modify Employee Leave','Managers and Team Leaders can directly correct approved leave, including historical records.',content,user,'Leave Requests',db);
 }
 
 async function reviewLeaveChange(request,db,user,id){
   const ch=await row(db,`SELECT lc.*,lr.start_date AS old_start,lr.end_date AS old_end,lr.start_portion AS old_sp,lr.end_portion AS old_ep,e.display_name,e.team_id FROM leave_change_requests lc JOIN leave_requests lr ON lr.id=lc.leave_request_id JOIN employees e ON e.id=lc.employee_id WHERE lc.id=?`,id);
   if(!ch)return errorPage('Leave modification not found.',user,404);
-  if(!user.managedTeamIds.includes(Number(ch.team_id)))return accessPage('Access Denied','This modification is outside your management scope.',403);
+  if(!canManageTeam(user,ch.team_id))return accessPage('Access Denied','This modification is outside your management scope.',403);
   if(request.method.toUpperCase()==='POST'){
     if(ch.status!=='pending')return redirect(request,`/leave-changes/${id}`);
     const form=await request.formData(),decision=String(form.get('decision')||'').toLowerCase(),notes=String(form.get('manager_notes')||'').trim()||null;
@@ -1154,14 +1184,13 @@ async function reviewLeaveChange(request,db,user,id){
     await createNotification(db,ch.employee_id,'leave_change_review',`Annual leave modification ${decision}`,`${ch.start_date} → ${ch.end_date}${notes?` · ${notes}`:''}`,'/leave');
     return redirect(request,'/leave-requests');
   }
-  const content=`<div class="card"><h2>${h(ch.display_name)}</h2><p><strong>Currently approved:</strong> ${h(ch.old_start)} ${h(ch.old_sp)} → ${h(ch.old_end)} ${h(ch.old_ep)}<br><strong>Requested:</strong> ${h(ch.start_date)} ${h(ch.start_portion)} → ${h(ch.end_date)} ${h(ch.end_portion)}</p>${ch.employee_notes?`<p><strong>Employee note:</strong><br>${h(ch.employee_notes)}</p>`:''}</div>${ch.status==='pending'?`<div class="form-card section-gap"><h2>Review Modification</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve Change</button><button name="decision" value="rejected" class="secondary">Reject Change</button></div></form></div>`:`<div class="notice section-gap"><strong>${h(ch.status)}</strong></div>`}`;
+  const content=`<div class="card"><h2>${h(ch.display_name)}</h2><p><strong>Currently approved:</strong> ${h(ch.old_start)} ${h(ch.old_sp)} → ${h(ch.old_end)} ${h(ch.old_ep)}<br><strong>Requested:</strong> ${h(ch.start_date)} ${h(ch.start_portion)} → ${h(ch.end_date)} ${h(ch.end_portion)}</p>${ch.employee_notes?`<p><strong>Employee note:</strong><br>${h(ch.employee_notes)}</p>`:''}</div>${ch.status==='pending'?`<div class="form-card section-gap"><h2>Review Modification</h2><form method="post"><label>Management Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3"></textarea></label><div class="action-bar"><button name="decision" value="approved">Approve Change</button><button name="decision" value="rejected" class="secondary">Reject Change</button></div></form></div>`:`<div class="notice section-gap"><strong>${h(ch.status)}</strong></div>`}`;
   return appPage('Review Leave Modification','Compare the approved booking with the requested change.',content,user,'Leave Requests',db);
 }
 
 async function leaveRequestsPage(request, db, user) {
-  const scopeSql = ` AND e.team_id IN (${user.managedTeamIds.map(() => '?').join(',') || 'NULL'})`;
-  const scopeParams = user.managedTeamIds;
-  const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.start_portion,lr.end_portion,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scopeSql}`, ...scopeParams);
+  const scope = managementScope(user);
+  const requests = await rows(db, `SELECT lr.id,lr.start_date,lr.end_date,lr.start_portion,lr.end_portion,lr.status,lr.employee_notes,lr.requested_at,lr.manager_notes,e.display_name,t.name AS team_name,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE 1=1${scope.sql}`, ...scope.params);
   const url=new URL(request.url), statusFilter=String(url.searchParams.get('status')||'all').toLowerCase(), hidePast=url.searchParams.get('past')!=='show', sort=String(url.searchParams.get('sort')||'newest'), today=new Date().toISOString().slice(0,10);
   const filtered=requests.filter(r=>(statusFilter==='all'||r.status===statusFilter)&&(!hidePast||r.end_date>=today)).sort((a,b)=>{if(a.status==='pending'&&b.status!=='pending')return -1;if(b.status==='pending'&&a.status!=='pending')return 1;return (sort==='oldest'?1:-1)*String(a.start_date).localeCompare(String(b.start_date));});
   const filterBar=`<div class="card" style="padding:14px 18px;margin-bottom:16px"><form method="get" action="/leave-requests" style="display:flex;gap:14px;align-items:end;flex-wrap:wrap"><label style="margin:0">Status<select name="status"><option value="all" ${statusFilter==='all'?'selected':''}>All statuses</option>${['pending','approved','rejected','cancelled'].map(s=>`<option value="${s}" ${statusFilter===s?'selected':''}>${s.replace(/^./,x=>x.toUpperCase())}</option>`).join('')}</select></label><label style="margin:0">Order<select name="sort"><option value="newest" ${sort==='newest'?'selected':''}>Newest leave first</option><option value="oldest" ${sort==='oldest'?'selected':''}>Oldest leave first</option></select></label><label style="margin:0;display:flex;align-items:center;gap:7px;padding-bottom:9px"><input type="checkbox" name="past" value="show" ${hidePast?'':'checked'} style="width:auto"> Show past leave</label><button type="submit" class="secondary">Apply Filters</button><a class="button secondary" href="/leave-requests">Reset</a></form></div>`;
@@ -1172,7 +1201,7 @@ async function leaveRequestsPage(request, db, user) {
 async function leaveRequestReviewPage(request, db, user, id) {
   const item = await row(db, `SELECT lr.*,e.display_name,e.team_id,t.name AS team_name,COALESCE(e.override_rota_pattern_id,t.default_rota_pattern_id) AS pattern_id,COALESCE(e.override_pattern_start_date,t.default_pattern_start_date) AS pattern_start_date,COALESCE(orp.cycle_length_weeks,trp.cycle_length_weeks,1) AS cycle_length_weeks,reviewer.display_name AS reviewer_name FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN teams t ON t.id=e.team_id LEFT JOIN rota_patterns orp ON orp.id=e.override_rota_pattern_id LEFT JOIN rota_patterns trp ON trp.id=t.default_rota_pattern_id LEFT JOIN employees reviewer ON reviewer.id=lr.reviewed_by WHERE lr.id=?`, id);
   if (!item) return accessPage('Leave request not found', 'The requested leave request does not exist.', 404);
-  if (!user.managedTeamIds.includes(Number(item.team_id))) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
+  if (!canManageTeam(user,item.team_id)) return accessPage('Access Denied', 'This leave request is outside your management scope.', 403);
   const closingImpact = item.status === 'pending' ? await closingCoverImpact(db, {
     type: 'leave', employeeId: item.employee_id, startDate: item.start_date, endDate: item.end_date,
     startPortion: item.start_portion, endPortion: item.end_portion
@@ -1184,7 +1213,7 @@ async function leaveRequestReviewPage(request, db, user, id) {
     const decision = String(form.get('decision') || '').toLowerCase();
     const notes = String(form.get('manager_notes') || '').trim() || null;
     if (decision === 'cancelled') {
-      if (item.status !== 'approved') return accessPage('Cannot cancel leave', 'Managers can cancel approved leave for employees in their managed teams, including historical leave.', 400);
+      if (item.status !== 'approved') return accessPage('Cannot cancel leave', 'Managers and Team Leaders can cancel approved leave for employees in their managed teams, including historical leave.', 400);
       await db.prepare("UPDATE leave_requests SET status='cancelled',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,manager_notes=? WHERE id=? AND status='approved'").bind(user.id,notes||'Cancelled by Manager',id).run();
       await createNotification(db,item.employee_id,'leave_cancelled_manager',`Annual leave cancelled by ${user.display_name}`,`${item.start_date}${item.end_date!==item.start_date?` → ${item.end_date}`:''}${notes?` · ${notes}`:''}`,'/leave');
       return redirect(request,'/leave-requests');
@@ -1235,7 +1264,7 @@ async function leaveRequestReviewPage(request, db, user, id) {
   const approvalWarning = item.status==='pending' && balance && projected < 0 ? `<div class="notice section-gap"><strong>⚠ Approval would create a negative balance</strong><br>This request uses ${requestCost.toFixed(1)} days. Current remaining balance is ${balance.remaining.toFixed(1)} days; after approval it would be ${projected.toFixed(1)} days. Approval is still permitted.</div>` : '';
   const closingWarning = item.status === 'pending' ? closingCoverWarningHtml(closingImpact, { overrideError: closingOverrideError }) : '';
   const today = new Date().toISOString().slice(0,10);
-  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Manager Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Manager Actions</h2><p><a class="button secondary" href="/leave-requests/${id}/edit">Modify Employee Leave</a></p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
+  const decision = item.status === 'pending' ? `<div class="form-card section-gap"><h2>Review</h2><form method="post"><label>Management Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label>${closingCoverOverrideControl(closingImpact)}<div class="action-bar"><button type="submit" name="decision" value="approved">Approve</button><button type="submit" name="decision" value="rejected" class="secondary">Reject</button><a class="button secondary" href="/leave-requests">Cancel</a></div></form></div>` : `<div class="notice section-gap"><strong>${h(String(item.status).replace(/^./,x=>x.toUpperCase()))}</strong>${item.reviewer_name?` by ${h(item.reviewer_name)}`:''}${item.manager_notes?`<br>${h(item.manager_notes)}`:''}</div>${item.status==='approved'?`<div class="form-card section-gap"><h2>Management Actions</h2><p><a class="button secondary" href="/leave-requests/${id}/edit">Modify Employee Leave</a></p><form method="post"><label>Reason / Note <span class="muted">(optional)</span><textarea name="manager_notes" rows="3" maxlength="500"></textarea></label><div class="action-bar"><button type="submit" name="decision" value="cancelled" class="secondary">Cancel Employee Leave</button></div></form></div>`:''}`;
   const content = `<div class="card"><h2>${h(item.display_name)}</h2><p><strong>Team:</strong> ${h(item.team_name)}<br><strong>Requested:</strong> ${h(item.start_date)} ${h(item.start_portion==='FULL'?'Full Day':item.start_portion)}${item.end_date!==item.start_date?` → ${h(item.end_date)} ${h(item.end_portion==='FULL'?'Full Day':item.end_portion)}`:''}<br><strong>Status:</strong> ${leaveStatus(item.status)}</p>${item.employee_notes?`<p><strong>Employee note:</strong><br>${h(item.employee_notes)}</p>`:''}</div>${balanceCard(balance)}${approvalWarning}${closingWarning}${overlaysCard}<div class="table-card section-gap"><h2>Scheduled Rota</h2>${rotaTable}</div>${decision}`;
   return appPage('Review Leave Request', 'Review the request against the employee’s scheduled rota.', content, user, 'Leave Requests', db);
 }
@@ -1323,30 +1352,30 @@ export default {
       if (path === '/leave/quick' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return quickLeavePage(request,env.DB,user);
       if (/^\/wfh\/\d+\/cancel$/.test(path) && request.method.toUpperCase()==='POST') return cancelWfh(request,env.DB,user,Number(path.split('/')[2]));
       if (path === '/wfh/request' && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhRequestPage(request,env.DB,user);
-      if ((user.isManager || user.isSystemAdmin) && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
-      if ((user.isManager || user.isSystemAdmin) && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
+      if (canManageTeamOperations(user) && path === '/wfh-requests' && request.method.toUpperCase()==='GET') return wfhRequestsPage(request,env.DB,user);
+      if (canManageTeamOperations(user) && /^\/wfh-requests\/\d+$/.test(path) && (request.method.toUpperCase()==='GET'||request.method.toUpperCase()==='POST')) return wfhReviewPage(request,env.DB,user,Number(path.split('/')[2]));
 
       if (path === '/leave' && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return myLeavePage(request, env.DB, user);
       if (/^\/leave\/\d+\/cancel$/.test(path) && request.method.toUpperCase() === 'POST') return cancelOwnLeave(request, env.DB, user, Number(path.split('/')[2]));
       if (/^\/leave\/\d+\/change$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return changeOwnApprovedLeave(request, env.DB, user, Number(path.split('/')[2]));
-      if ((user.isManager || user.isSystemAdmin) && /^\/leave-changes\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return reviewLeaveChange(request, env.DB, user, Number(path.split('/')[2]));
+      if (canManageTeamOperations(user) && /^\/leave-changes\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return reviewLeaveChange(request, env.DB, user, Number(path.split('/')[2]));
 
       if (/^\/leave\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return editOwnPendingLeave(request, env.DB, user, Number(path.split('/')[2]));
 
 
-      if ((user.isManager || user.isSystemAdmin) && /^\/leave-requests\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return managerEditEmployeeLeave(request, env.DB, user, Number(path.split('/')[2]));
+      if (canManageTeamOperations(user) && /^\/leave-requests\/\d+\/edit$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return managerEditEmployeeLeave(request, env.DB, user, Number(path.split('/')[2]));
 
-      if ((user.isManager || user.isSystemAdmin) && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
-      if ((user.isManager || user.isSystemAdmin) && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
+      if (canManageTeamOperations(user) && path === '/leave-requests' && request.method.toUpperCase() === 'GET') return leaveRequestsPage(request, env.DB, user);
+      if (canManageTeamOperations(user) && /^\/leave-requests\/\d+$/.test(path) && (request.method.toUpperCase() === 'GET' || request.method.toUpperCase() === 'POST')) return leaveRequestReviewPage(request, env.DB, user, Number(path.split('/')[2]));
 
       const requestForApp = withIdentityHeader(request, user.email || identity.email || null);
-      if (!user.isManager && !user.isSystemAdmin) {
+      if (!canManageTeamOperations(user)) {
         if (path === '/') return redirect(request, '/rota');
         if (!path.startsWith('/rota') && !path.startsWith('/wfh/') && !path.startsWith('/assets/')) return accessPage('Access Denied', 'Employees have rota access only.', 403);
       }
 
-      if (user.isManager && !user.isSystemAdmin) {
-        if (path === '/employees' || /^\/employees\/\d+\/edit$/.test(path)) return decorateResponse(await managerEmployees(request, env.DB, user), user, path, localAuth, env.DB);
+      if (hasScopedTeamManagementRole(user) && !user.isSystemAdmin) {
+        if (path === '/employees' || /^\/employees\/\d+\/(edit|leave-entitlement)$/.test(path)) return decorateResponse(await managerEmployees(request, env.DB, user), user, path, localAuth, env.DB);
         if (isManagerConfigPath(path)) return decorateResponse(await configWorker.fetch(requestForApp, env), user, path, localAuth, env.DB);
       }
 

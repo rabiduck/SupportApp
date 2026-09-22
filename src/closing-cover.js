@@ -1,3 +1,5 @@
+import { canManageTeamOperations } from './permissions.js';
+
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
@@ -170,13 +172,13 @@ async function managedTeamIds(db, user) {
 }
 
 export async function handleKeyholderRoute(request, db, user, path) {
-  const canMaintain = Boolean(user.isSystemAdmin || user.isManager);
-  const canView = Boolean(canMaintain || user.isTeamLeader);
+  const canMaintain = canManageTeamOperations(user);
+  const canView = canMaintain;
   if (!canView) return { kind: 'denied', status: 403, message: 'Manager or Team Leader access is required.' };
 
   const match = path.match(/^\/keyholders\/(\d+)\/toggle$/);
   if (match && request.method.toUpperCase() === 'POST') {
-    if (!canMaintain) return { kind: 'denied', status: 403, message: 'Only Managers and System Administrators can maintain the keyholder register.' };
+    if (!canMaintain) return { kind: 'denied', status: 403, message: 'Manager, Team Leader or System Administrator access is required.' };
     const employeeId = Number(match[1]);
     const teamIds = await managedTeamIds(db, user);
     const employee = await row(db, `SELECT id FROM employees WHERE id=? AND is_active=1 AND team_id IN (${placeholders(teamIds)})`, employeeId, ...teamIds);
@@ -207,6 +209,6 @@ export async function handleKeyholderRoute(request, db, user, path) {
     kind: 'page',
     title: 'Closing Cover',
     description: 'Maintain keyholders and confirm that an 18:00 lock-up capability remains in the building.',
-    content: `<div class="table-card"><h2 class="keyholder-heading">Closing Cover · This Week and Next</h2><table><thead><tr><th>Date</th><th>Position</th><th>Available Keyholder</th></tr></thead><tbody>${coverageRows}</tbody></table></div><div class="table-card section-gap"><h2 class="keyholder-heading">Keyholder Register</h2>${canMaintain ? '<p class="keyholder-help">Managers can maintain employees in their managed teams. Closing-cover calculations use all active registered keyholders.</p>' : '<p class="keyholder-help">This register is maintained by Managers and System Administrators.</p>'}<table><thead><tr><th>Employee</th><th>Team</th><th>Status</th>${canMaintain ? '<th></th>' : ''}</tr></thead><tbody>${registerRows}</tbody></table></div>`
+    content: `<div class="table-card"><h2 class="keyholder-heading">Closing Cover · This Week and Next</h2><table><thead><tr><th>Date</th><th>Position</th><th>Available Keyholder</th></tr></thead><tbody>${coverageRows}</tbody></table></div><div class="table-card section-gap"><h2 class="keyholder-heading">Keyholder Register</h2><p class="keyholder-help">Managers and Team Leaders can maintain employees in their managed teams. Closing-cover calculations use all active registered keyholders.</p><table><thead><tr><th>Employee</th><th>Team</th><th>Status</th><th></th></tr></thead><tbody>${registerRows}</tbody></table></div>`
   };
 }

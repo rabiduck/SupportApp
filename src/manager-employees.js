@@ -1,3 +1,5 @@
+import { isElevatedRoleName } from './permissions.js';
+
 const h = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
@@ -17,7 +19,7 @@ function shell(title, content, user, active = 'Employees') {
   const nav = [
     ['Dashboard','/'],['Rota','/rota'],['Employees','/employees'],['Shift Patterns','/shift-patterns']
   ].map(([name,href]) => `<a class="${active === name ? 'active' : ''}" href="${href}">${name}</a>`).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${h(user.display_name)} · Manager</div></header><div class="app-shell"><nav class="side-nav">${nav}</nav><main class="page">${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)} · Support Portal</title><link rel="stylesheet" href="/assets/site.css"></head><body><header class="top-bar"><div class="brand">Support Portal</div><div class="user-area">${h(user.display_name)} · ${h(user.primaryRole || 'Manager')}</div></header><div class="app-shell"><nav class="side-nav">${nav}</nav><main class="page">${content}</main></div><footer class="footer">SupportApp · Cloudflare-native UAT</footer></body></html>`;
 }
 
 const pageHeader = (title, description) => `<div class="page-header"><div><div class="page-title">${h(title)}</div><div class="page-description">${h(description)}</div></div></div>`;
@@ -44,7 +46,7 @@ async function listPage(db, user) {
 
   const create = teams.length ? `<div class="action-bar section-gap"><button type="button" data-modal-open="create-employee">Add Employee</button></div><dialog class="app-modal" id="create-employee"><div class="modal-head"><h2>Add Employee</h2><button type="button" class="modal-close" data-modal-close aria-label="Close">×</button></div><div class="modal-body"><form method="post" action="/employees"><label>Display Name<input name="display_name" required maxlength="100"></label><label>Username<input name="username" required maxlength="100"></label><label>Email<input name="email" type="email" required maxlength="200"></label><label>Role<input value="Employee" disabled></label><label>Team<select name="team_id" required>${teams.map(t => `<option value="${t.id}">${h(t.name)}</option>`).join('')}</select></label><label>Job Title<input name="job_title" maxlength="100"></label><label>Phone<input name="phone" maxlength="50"></label><label>Rota Override<select name="override_rota_pattern_id"><option value="">— Inherit team default —</option>${patterns.map(p => `<option value="${p.id}">${h(p.name)}</option>`).join('')}</select></label><label>Override Start Date<input name="override_pattern_start_date" type="date"></label><div class="action-bar"><button type="submit">Create Employee</button><button type="button" class="secondary" data-modal-close>Cancel</button></div></form></div></dialog>` : '';
 
-  return response('Employees', `${pageHeader('Employees','People and identities within the teams you manage.')}<div class="notice"><strong>Manager access</strong><br>Managers may create and maintain Employees in their assigned teams. Manager and SystemAdmin role changes remain restricted to SystemAdmin.</div><div class="table-card">${table}</div>${create}`, user);
+  return response('Employees', `${pageHeader('Employees','People and identities within the teams you manage.')}<div class="notice"><strong>Management scope</strong><br>Managers and Team Leaders may create and maintain ordinary employees in their assigned teams. Elevated role changes remain restricted to SystemAdmin.</div><div class="table-card">${table}</div>${create}`, user);
 }
 
 async function editPage(db, id, user) {
@@ -52,8 +54,8 @@ async function editPage(db, id, user) {
   if (!scope) return errorPage('This manager has no assigned team scope.', user, 403);
   const employee = await row(db, `SELECT e.* FROM employees e WHERE e.id=? AND e.team_id IN ${scope.sql}`, id, ...scope.params);
   if (!employee) return errorPage('This employee is outside your management scope.', user, 403);
-  const role = await row(db, `SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=? LIMIT 1`, id);
-  if (role?.name === 'Manager' || role?.name === 'SystemAdmin') return errorPage('Manager and SystemAdmin accounts may only be edited by SystemAdmin.', user, 403);
+  const roles = await rows(db, `SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=?`, id);
+  if (roles.some((role) => isElevatedRoleName(role.name))) return errorPage('Team Leader, Manager and SystemAdmin accounts may only be edited by SystemAdmin.', user, 403);
   const teams = await rows(db, `SELECT id,name FROM teams WHERE id IN ${scope.sql} AND (is_active=1 OR id=?) ORDER BY name`, ...scope.params, employee.team_id);
   const patterns = await rows(db, "SELECT id,name FROM rota_patterns WHERE is_active=1 AND name<>'No Scheduled Hours' ORDER BY name");
   const teamOptions = teams.map(t => `<option value="${t.id}" ${Number(t.id)===Number(employee.team_id)?'selected':''}>${h(t.name)}</option>`).join('');
@@ -92,8 +94,8 @@ async function saveEmployee(request, db, user, id = null) {
   if (id) {
     const current = await row(db, 'SELECT team_id FROM employees WHERE id=?', id);
     if (!current || !(user.managedTeamIds || []).includes(Number(current.team_id))) return errorPage('This employee is outside your management scope.', user, 403);
-    const role = await row(db, `SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=? LIMIT 1`, id);
-    if (role?.name === 'Manager' || role?.name === 'SystemAdmin') return errorPage('Manager and SystemAdmin accounts may only be edited by SystemAdmin.', user, 403);
+    const roles = await rows(db, `SELECT r.name FROM employee_roles er JOIN roles r ON r.id=er.role_id WHERE er.employee_id=?`, id);
+    if (roles.some((role) => isElevatedRoleName(role.name))) return errorPage('Team Leader, Manager and SystemAdmin accounts may only be edited by SystemAdmin.', user, 403);
   }
 
   const displayName = String(form.get('display_name') || '').trim();

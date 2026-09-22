@@ -247,6 +247,13 @@ const V26_SCHEMA_STATEMENTS = [
  "UPDATE app_meta SET value='26' WHERE key='schema_version'"
 ];
 
+const V27_SCHEMA_STATEMENTS = [
+ "INSERT OR IGNORE INTO roles (name, description, is_system) VALUES ('TeamLeader','Deputy manager with operational responsibility for assigned teams',1)",
+ "INSERT OR IGNORE INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.name='TeamLeader' AND p.code IN ('MANAGE_USERS','MANAGE_TEAMS','MANAGE_EMPLOYEES','MANAGE_ROTA')",
+ "UPDATE roles SET description='Manager with operational responsibility for assigned teams' WHERE name='Manager'",
+ "UPDATE app_meta SET value='27' WHERE key='schema_version'"
+];
+
 async function applyStatements(db, statements, ignoreDuplicateColumns = false) {
   for (const statement of statements) {
     try {
@@ -292,5 +299,6 @@ export async function ensureSchema(db) {
   if (version < 23) { await applyStatements(db, V23_SCHEMA_STATEMENTS); version = 23; }
   if (version < 24) { await applyStatements(db, V24_SCHEMA_STATEMENTS); version = 24; }
   if (version < 25) { await applyStatements(db, V25_SCHEMA_STATEMENTS); version = 25; }
-  if (version < 26) { await applyStatements(db, V26_SCHEMA_STATEMENTS, true); }
+  if (version < 26) { await applyStatements(db, V26_SCHEMA_STATEMENTS, true); version = 26; }
+  if (version < 27) { await applyStatements(db, V27_SCHEMA_STATEMENTS); version = 27; }
 }
